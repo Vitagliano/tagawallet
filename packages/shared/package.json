@@ -1,0 +1,14 @@
+{
+  "name": "@tagawallet/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./lite": "./src/lite.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "@scure/base": "^2.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.9.3" }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "tagawallet",
+  "private": true,
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "dev": "pnpm --filter @tagawallet/web dev",
+    "dev:db": "node scripts/dev-db.mjs",
+    "build": "pnpm --filter @tagawallet/web build && pnpm --filter @tagawallet/extension build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "mongodb": "^7.8.0",
+    "mongodb-memory-server": "^11.3.0",
+    "typescript": "^5.9.3",
+    "viem": "^2.57.13"
+  }
+}
