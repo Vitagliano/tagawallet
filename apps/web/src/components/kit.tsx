@@ -51,11 +51,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast, undoable }}>
       {children}
-      <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4">
+      <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2">
         {toasts.map((t) => (
-          <div key={t.id} role="status" className="pointer-events-auto flex items-center gap-4 rounded-lg bg-ink px-4 py-2.5 text-sm text-paper shadow-lg">
-            <span>{t.message}</span>
-            {t.undo && <button className="font-semibold underline-offset-2 hover:underline" onClick={t.undo}>Undo</button>}
+          <div key={t.id} role="status" className="surface-raised pointer-events-auto flex animate-[slide_200ms_ease-out] items-center gap-3 rounded-xl py-2.5 pl-3.5 pr-3 text-sm text-ink">
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-accent" />
+            <span className="min-w-0">{t.message}</span>
+            {t.undo && (
+              <button className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-accent hover:bg-wash" onClick={t.undo}>Undo</button>
+            )}
           </div>
         ))}
       </div>

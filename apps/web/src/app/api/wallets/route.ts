@@ -4,13 +4,20 @@ import { ApiError, route, ser } from "@/lib/api";
 import { getList, getOwnEntity, logActivity, track, trackFirst } from "@/lib/access";
 import { getDb } from "@/lib/db";
 import { addToList, hydrateWallets, normalizedFor, upsertWallet } from "@/lib/wallets";
-import { searchWallets, walletFiltersFrom } from "@/lib/search";
+import { searchWallets, searchWalletsPage, walletFiltersFrom, WALLET_SORTS, type WalletSort } from "@/lib/search";
 
 export const GET = route(async ({ user, req }) => {
   const p = req.nextUrl.searchParams;
   const q = (p.get("q") ?? "").slice(0, 200);
   const limit = Math.min(Math.max(Number(p.get("limit")) || 100, 1), 500);
   const filters = await walletFiltersFrom(p, user._id);
+  // Paginated tables ask for an offset and get the total back.
+  if (p.has("offset")) {
+    const offset = Math.max(Number(p.get("offset")) || 0, 0);
+    const sort = (p.get("sort") ?? "updated") as WalletSort;
+    const page = await searchWalletsPage(user._id, q, filters, { limit, offset, sort: sort in WALLET_SORTS ? sort : "updated" });
+    return ser({ wallets: await hydrateWallets(page.wallets, user._id), total: page.total, offset, limit });
+  }
   // One extra tells the page whether there are more than it shows.
   const wallets = await searchWallets(user._id, q, filters, limit + 1);
   const hydrated = await hydrateWallets(wallets.slice(0, limit), user._id);
@@ -35,9 +42,13 @@ export const POST = route(async ({ user, body }) => {
     await logActivity(list._id, user._id, "added a wallet", wallet.displayLabel || wallet.address);
   }
   if (entity) {
+    const now = new Date();
     await db.collection("wallet_entity_links").updateOne(
       { walletId: wallet._id, entityId: entity._id },
-      { $setOnInsert: { relationship: "associated", visibility: "private", source: input.source === "import" ? "import" : "user", claimedBy: user._id, evidence: [], createdAt: new Date(), updatedAt: new Date() } },
+      {
+        $set: { relationship: input.relationship ?? "associated", updatedAt: now },
+        $setOnInsert: { visibility: "private", source: input.source === "import" ? "import" : "user", claimedBy: user._id, evidence: [], createdAt: now },
+      },
       { upsert: true },
     );
   }

@@ -10,7 +10,7 @@ import { useCreate } from "./collections";
 
 type Item = { id: string; group: string; label: string; hint?: string; run: () => void };
 
-/** ⌘K from anywhere: find a wallet, entity or list, add an address, or jump to a page. */
+/** ⌘K from anywhere: find a person, project, wallet or list, or start something new. */
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { addWallet, newList } = useCreate();
   const router = useRouter();
@@ -44,18 +44,23 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     items.push({ id: "add", group: "Add", label: `Add ${truncateAddress(address.raw)}`, hint: "New wallet", run: go(() => addWallet({ address: address.raw })) });
   }
   if (term) {
-    for (const w of data?.wallets?.slice(0, 6) ?? []) items.push({ id: `w${w.id}`, group: "Wallets", label: w.displayLabel || "Unnamed wallet", hint: truncateAddress(w.address), run: go(() => openWallet(w.id)) });
-    for (const e of data?.entities?.slice(0, 4) ?? []) items.push({ id: `e${e.id}`, group: "Lists", label: e.name, hint: e.type, run: go(() => router.push(`/entities/${e.id}`)) });
-    for (const l of lists?.filter((l) => l.name.toLowerCase().includes(term)).slice(0, 4) ?? []) items.push({ id: `l${l.id}`, group: "Lists", label: l.name, hint: `${l.walletCount} wallets`, run: go(() => router.push(`/lists/${l.id}`)) });
+    for (const e of data?.entities?.slice(0, 6) ?? []) {
+      items.push({ id: `e${e.id}`, group: "Contacts", label: e.name, hint: e.type === "individual" ? "Person" : "Project", run: go(() => router.push(`/entities/${e.id}`)) });
+    }
+    for (const w of data?.wallets?.slice(0, 5) ?? []) {
+      items.push({ id: `w${w.id}`, group: "Wallets", label: w.displayLabel || "Unnamed wallet", hint: truncateAddress(w.address), run: go(() => openWallet(w.id)) });
+    }
+    for (const l of lists?.filter((l) => l.name.toLowerCase().includes(term)).slice(0, 4) ?? []) {
+      items.push({ id: `l${l.id}`, group: "Lists", label: l.name, hint: `${l.walletCount} wallets`, run: go(() => router.push(`/lists/${l.id}`)) });
+    }
   }
   const actions: Item[] = [
-    { id: "a-wallets", group: "Go to", label: "Wallets", run: go(() => router.push("/dashboard")) },
-    { id: "a-lists", group: "Go to", label: "Lists", run: go(() => router.push("/lists")) },
+    { id: "a-home", group: "Go to", label: "Home", run: go(() => router.push("/dashboard")) },
     { id: "a-settings", group: "Go to", label: "Settings", run: go(() => router.push("/settings")) },
-    { id: "a-wallet", group: "Create", label: "Add a wallet", run: go(() => addWallet()) },
-    { id: "a-list", group: "Create", label: "New list", run: go(() => newList("list")) },
     { id: "a-person", group: "Create", label: "New person", run: go(() => newList("person")) },
     { id: "a-project", group: "Create", label: "New project", run: go(() => newList("project")) },
+    { id: "a-wallet", group: "Create", label: "Add a wallet", run: go(() => addWallet()) },
+    { id: "a-list", group: "Create", label: "New list", run: go(() => newList("list")) },
   ];
   items.push(...actions.filter((a) => !term || a.label.toLowerCase().includes(term)));
   const active = Math.min(index, Math.max(items.length - 1, 0));
@@ -66,7 +71,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       {open && (
         <div>
           <input
-            autoFocus value={q} aria-label="Search everything" placeholder="Search wallets and lists, or paste an address"
+            autoFocus value={q} aria-label="Search everything" placeholder="Search people, wallets and lists, or paste an address"
             onChange={(e) => { setQ(e.target.value); setIndex(0); }}
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") { e.preventDefault(); setIndex((i) => Math.min(i + 1, items.length - 1)); }

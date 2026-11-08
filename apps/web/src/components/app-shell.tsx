@@ -10,11 +10,6 @@ import { WalletDrawer } from "./wallet-drawer";
 import { CommandPalette } from "./command-palette";
 import { CreateProvider, KindIcon, useCreate } from "./collections";
 
-const NAV = [
-  { href: "/dashboard", label: "Wallets", also: [] as string[] },
-  { href: "/lists", label: "Lists", also: ["/entities"] },
-];
-
 /** Until the address is confirmed, a quiet reminder with a way to resend. Hidden for this tab once dismissed. */
 function VerifyEmailBanner({ email }: { email: string }) {
   const [hidden, setHidden] = useState(() => { try { return sessionStorage.getItem("taw-verify-dismissed") === "1"; } catch { return false; } });
@@ -37,7 +32,7 @@ function VerifyEmailBanner({ email }: { email: string }) {
   );
 }
 
-export function AppShell({ children, user }: { children: React.ReactNode; user: { displayName: string; isAdmin: boolean; email?: string | null; emailVerified?: boolean } }) {
+export function AppShell({ children, user }: { children: React.ReactNode; user: { displayName: string; isAdmin: boolean; email?: string | null; emailVerified?: boolean; handle?: string | null; profilePublic?: boolean } }) {
   const path = usePathname();
   const router = useRouter();
   const [palette, setPalette] = useState(false);
@@ -54,10 +49,12 @@ export function AppShell({ children, user }: { children: React.ReactNode; user: 
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 md:px-6">
           <Link href="/dashboard" aria-label="TagAWallet home" className="shrink-0"><Logo /></Link>
 
-          <nav aria-label="Main" className="order-last -mx-3 flex w-full items-center gap-1 md:order-none md:mx-0 md:w-auto">
-            {NAV.map((n) => { const on = active(n.href) || n.also.some(active); return <Link key={n.href} href={n.href} aria-current={on ? "page" : undefined} className={tab(on)}>{n.label}</Link>; })}
-            {user.isAdmin && <Link href="/admin/reports" className={tab(active("/admin"))}>Moderation</Link>}
-          </nav>
+          {/* Everything lives on home (the logo). Only admins get a second destination. */}
+          {user.isAdmin && (
+            <nav aria-label="Main" className="flex items-center gap-1">
+              <Link href="/admin/reports" aria-current={active("/admin") ? "page" : undefined} className={tab(active("/admin"))}>Moderation</Link>
+            </nav>
+          )}
 
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => setPalette(true)} aria-label="Search"
@@ -76,7 +73,10 @@ export function AppShell({ children, user }: { children: React.ReactNode; user: 
                   </div>
                   <Link href="/settings" onClick={close} className={menuItem}>Settings</Link>
                   <Link href="/settings#sign-in" onClick={close} className={menuItem}>Sign-in methods</Link>
-                  <Link href="/settings#profiles" onClick={close} className={menuItem}>Public profiles</Link>
+                  {user.profilePublic && user.handle
+                    ? <Link href={`/u/${user.handle}`} onClick={close} className={menuItem}>Your public profile</Link>
+                    : <Link href="/settings#profile" onClick={close} className={menuItem}>Set up your public profile</Link>}
+                  <Link href="/settings#profiles" onClick={close} className={menuItem}>What you made public</Link>
                   <a href="/api/account/export" onClick={close} className={menuItem}>Export my data</a>
                   <div className="my-1 border-t border-line" />
                   <button className={menuItem} onClick={() => { close(); void signOut(); }}>Sign out</button>
@@ -106,12 +106,12 @@ function NewMenu() {
       buttonClass="inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-xl bg-accent px-3 text-sm font-semibold text-accent-ink hover:opacity-90">
       {(close) => (
         <>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("person"); }}><KindIcon kind="person" className="text-muted" />Person</button>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("project"); }}><KindIcon kind="project" className="text-muted" />Project</button>
           <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); addWallet(); }}>
             <span aria-hidden className="grid size-4 place-items-center font-mono text-xs text-muted">0x</span>Wallet
           </button>
           <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("list"); }}><KindIcon kind="list" className="text-muted" />List</button>
-          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("person"); }}><KindIcon kind="person" className="text-muted" />Person</button>
-          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("project"); }}><KindIcon kind="project" className="text-muted" />Project</button>
         </>
       )}
     </Menu>
