@@ -40,7 +40,8 @@ const manifest = {
   options_page: "options.html",
   background: { service_worker: "background.js" },
   // `scripting` registers the content script only on sites the person has enabled.
-  permissions: ["storage", "activeTab", "scripting"],
+  // `contextMenus` adds "Tag with TagAWallet" on selected text. `alarms` retries queued tags while the worker sleeps.
+  permissions: ["storage", "activeTab", "scripting", "contextMenus", "alarms"],
   // Nothing is granted at install. Each origin is requested when the person turns a site on.
   optional_host_permissions: ["https://*/*", ...(localDev ? ["http://localhost/*"] : [])],
   // Lets only the TagAWallet site hand the extension its session after sign-in.
