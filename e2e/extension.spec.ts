@@ -214,7 +214,8 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   // Mirrors real X: no test ids, a bare @handle in the header, and @handle links on posts.
   const html = `<!doctype html><title>X</title><body><main><div><div><span>Linked Person</span></div><div><span><span id="at">@LinkedPerson</span></span></div></div>
     <article><span><a href="/LinkedPerson"><span>Linked Person</span></a></span><span><a id="author" href="/LinkedPerson"><span>@LinkedPerson</span></a></span><a href="/LinkedPerson/status/1">Oct 28</a></article>
-    <article><span><a href="/stranger"><span>Stranger</span></a></span><span><a href="/stranger"><span>@stranger</span></a></span></article></main></body>`;
+    <article><span><a href="/stranger"><span>Stranger</span></a></span><span><a href="/stranger"><span>@stranger</span></a></span></article>
+    <article><span>building with <a href="/nowalletco">@nowalletco</a></span></article></main></body>`;
   await context.route("https://x.com/**", (r) => r.fulfill({ contentType: "text/html", body: html }));
   await ext({ type: "updateSettings", patch: {} });
   const page = await context.newPage();
@@ -222,7 +223,7 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   await page.goto("https://x.com/LinkedPerson");
   const header = page.locator("tagawallet-chip[data-tagawallet-profile]");
   await expect(header.getByRole("button")).toHaveText("Linked person");
-  await expect(page.locator("article tagawallet-chip")).toHaveCount(1);
+  await expect(page.locator("article tagawallet-chip")).toHaveCount(2);
   await header.getByRole("button").click();
   await expect(page.locator("tagawallet-card").getByText("Your private tag")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -230,6 +231,17 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   // X changes profile without a reload and reuses the header element.
   await page.evaluate(() => { history.pushState({}, "", "/stranger"); const at = document.getElementById("at")!; at.textContent = "@stranger"; });
   await expect(header).toHaveCount(0);
+  // On someone else's profile, every account recognized in posts and bios is on the page list and in the badge,
+  // not just the profile's owner.
+  const p = await context.newPage();
+  await p.goto(`chrome-extension://${extensionId}/options.html`);
+  const xTab = await p.evaluate(async () => (await chrome.tabs.query({ url: "https://x.com/*" }))[0]?.id);
+  await expect.poll(async () => ((await p.evaluate((t) => chrome.tabs.sendMessage(t!, { type: "taw:scan" }), xTab)) as { detected: { labels: { label: string }[] }[] })
+    .detected.map((d) => d.labels[0]?.label).sort()).toEqual(["Linked person", "No Wallet Co"]);
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t! }), xTab)).toBe("2");
+  // Find works for an account chip too.
+  expect(await p.evaluate((t) => chrome.tabs.sendMessage(t!, { type: "taw:locate", normalized: "0xd1220a0cf47c7b9be7a2e6ba89f429762e7b9adb" }), xTab)).toEqual({ found: true });
+  await p.close();
   await page.evaluate(() => { history.pushState({}, "", "/nowalletco"); document.getElementById("at")!.textContent = "@nowalletco"; });
   await expect(header.getByRole("button")).toHaveText("No Wallet Co");
   await page.close();

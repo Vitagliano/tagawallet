@@ -150,15 +150,43 @@ async function lookup(addresses: string[]) {
 }
 
 /** Counts for the toolbar badge. Only numbers leave the page: never the addresses or any text. */
+let lastSummary = "";
 function reportPage() {
-  if (!active) { void send({ type: "pageSummary", summary: { tagged: 0, flagged: 0, seen: 0 } }).catch(() => {}); return; }
   let tagged = 0, flagged = 0;
-  for (const address of detected.keys()) {
-    const list = labels.get(address) ?? [];
-    if (list.length) tagged++;
-    if (list.some((l) => l.status === "watchlist" || l.status === "scam")) flagged++;
+  const entries = active ? pageEntries() : [];
+  for (const d of entries) {
+    if (d.labels.length) tagged++;
+    if (d.labels.some((l) => l.status === "watchlist" || l.status === "scam")) flagged++;
   }
-  void send({ type: "pageSummary", summary: { tagged, flagged, seen: detected.size } }).catch(() => {});
+  // X re-renders constantly, so only a change is sent. A new address counts as a change: an in-app navigation
+  // clears the tab's count in the background, even when the numbers stay the same.
+  const summary = { tagged, flagged, seen: entries.length };
+  const key = `${location.href} ${JSON.stringify(summary)}`;
+  if (key === lastSummary) return;
+  lastSummary = key;
+  void send({ type: "pageSummary", summary }).catch(() => {});
+}
+
+/**
+ * Everything TagAWallet recognized on this page, once each: addresses in the text, and on X the accounts
+ * matched against your handle index (a profile header, @handles on posts and in bios).
+ */
+function pageEntries(): Detected[] {
+  const out = new Map<string, Detected>();
+  const add = (d: Detected) => { if (!out.has(d.normalized) || (!out.get(d.normalized)!.labels.length && d.labels.length)) out.set(d.normalized, d); };
+  if (IS_X) {
+    const current = handleEntries.get(xHandleFromPath(location.pathname) ?? "");
+    const shown = [...handleChips].filter((h) => h.host.isConnected).map((h) => handleEntries.get(h.host.getAttribute(HANDLE_ATTR) ?? ""));
+    for (const entry of [current, ...shown]) {
+      if (!entry) continue;
+      const f = foundFor(entry);
+      add({ raw: f.raw, normalized: f.normalized, kind: f.kind as Detected["kind"], chain: entry.labels[0]?.chain ?? "ethereum", labels: entry.labels });
+    }
+  }
+  for (const d of detected.values()) {
+    add({ raw: d.raw, normalized: d.normalized, kind: d.kind as Detected["kind"], chain: chainFromLocation(HOST, location.pathname + location.search, d.kind), labels: labels.get(d.normalized) ?? [] });
+  }
+  return [...out.values()];
 }
 
 /** An ENS name that resolves on-chain gets a chip for the address behind it, so it can be tagged right there. */
@@ -228,6 +256,8 @@ function scanHandles() {
     if (next?.tagName.toLowerCase() === CHIP_TAG && next.hasAttribute(HANDLE_ATTR)) continue;
     placeHandle(match, a.parentNode!, a.nextSibling);
   }
+  // Accounts come and go as X scrolls and navigates, so the badge and panel follow.
+  reportPage();
 }
 
 async function loadHandles() {
@@ -406,7 +436,8 @@ async function tagSelection(text: string) {
 
 /** From the side panel: bring an address into view and flash its chip. */
 function locate(normalized: string): boolean {
-  const handle = [...(chips.get(normalized) ?? [])].find((h) => h.host.isConnected);
+  // An address chip, or on X an account's chip (keyed by its wallet address, or x:handle when it has none).
+  const handle = [...(chips.get(normalized) ?? []), ...[...handleChips].filter((h) => h.found.normalized === normalized)].find((h) => h.host.isConnected);
   if (!handle) return false;
   // A hidden chip has no box, so scroll to the text it sits beside instead.
   const target = handle.host.hidden ? handle.host.parentElement ?? handle.host : handle.host;
@@ -431,17 +462,7 @@ function onTabMessage(message: TabMessage, _sender: chrome.runtime.MessageSender
     void lookup(all);
     void loadHandles();
   }
-  if (message.type === "taw:scan") {
-    const list: Detected[] = [...detected.values()].map((d) => ({
-      raw: d.raw, normalized: d.normalized, kind: d.kind as Detected["kind"], chain: chainFromLocation(HOST, location.pathname + location.search, d.kind), labels: labels.get(d.normalized) ?? [],
-    }));
-    const current = IS_X ? handleEntries.get(xHandleFromPath(location.pathname) ?? "") : undefined;
-    if (current) {
-      const f = foundFor(current);
-      list.unshift({ raw: f.raw, normalized: f.normalized, kind: f.kind as Detected["kind"], chain: current.labels[0]?.chain ?? "ethereum", labels: current.labels });
-    }
-    reply({ detected: list.filter((d, i) => list.findIndex((o) => o.normalized === d.normalized) === i) });
-  }
+  if (message.type === "taw:scan") reply({ detected: pageEntries() });
 }
 
 // The script can be injected more than once (popup, right-click). Only the first copy listens, so nothing runs twice.
