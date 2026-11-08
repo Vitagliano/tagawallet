@@ -37,7 +37,7 @@ export const POST = route<{ id: string }>(async ({ user, params, req }) => {
     let normalizedTarget = target, message: string | undefined, walletId;
     if (method === "signature") {
       const { wallet, own } = await getWallet(objectId.parse(target), user._id);
-      if (!own || wallet.chain === "solana" || wallet.chain === "bitcoin") throw new ApiError(422, "Signature proof is available for your own EVM wallets.");
+      if (!own || wallet.chain === "bitcoin") throw new ApiError(422, "Signature proof is available for your own EVM and Solana wallets.");
       walletId = wallet._id; normalizedTarget = wallet.address;
       message = signatureMessage(entity.name, wallet.address, code);
     } else {
@@ -63,7 +63,7 @@ export const POST = route<{ id: string }>(async ({ user, params, req }) => {
   if (v.method === "dns") passed = await checkDns(new URL(v.target).hostname, v.code);
   if (v.method === "meta") passed = await checkMeta(v.target, v.code);
   if (v.method === "ens") passed = await checkEns(v.target, v.code);
-  if (v.method === "signature") passed = !!proof && /^0x[0-9a-f]+$/i.test(proof) && await checkSignature(v.target, v.message, proof);
+  if (v.method === "signature") passed = !!proof && await checkSignature(v.target, v.message, proof);
   if (!passed) {
     await db.collection("verifications").updateOne({ _id: v._id }, { $set: { lastCheckedAt: new Date() } });
     throw new ApiError(422, "We couldn't find the proof yet. DNS and ENS changes can take a few minutes to appear.");

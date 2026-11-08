@@ -20,6 +20,8 @@ export function getDb(): Promise<Db> {
 }
 
 async function ensureIndexes(db: Db) {
+  // Accounts from before email verification existed are treated as verified, so nobody is locked out.
+  await db.collection("users").updateMany({ email: { $type: "string" }, emailVerifiedAt: { $exists: false } }, [{ $set: { emailVerifiedAt: "$createdAt" } }]).catch(() => {});
   await Promise.all([
     // Partial: X and wallet sign-ins have no email.
     db.collection("users").createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } }),
@@ -50,5 +52,8 @@ async function ensureIndexes(db: Db) {
     db.collection("audit_log").createIndex({ createdAt: -1 }),
     db.collection("events").createIndex({ name: 1, createdAt: -1 }),
     db.collection("events").createIndex({ userId: 1, name: 1 }),
+    db.collection("ens_cache").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    db.collection("api_keys").createIndex({ tokenHash: 1 }, { unique: true }),
+    db.collection("api_keys").createIndex({ userId: 1, createdAt: -1 }),
   ]);
 }

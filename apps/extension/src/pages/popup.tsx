@@ -1,55 +1,56 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CHAIN_IDS, CHAINS, parsePastedAddress, truncateAddress } from "@tagawallet/shared/lite";
-import { chainFromHost, send, type Bootstrap, type Detected, type Settings, type TagResult } from "../lib/messages";
+import { parsePastedAddress, truncateAddress } from "@tagawallet/shared/lite";
+import { send, type Bootstrap, type Detected, type FailedTag, type ResolvedLabel, type Settings, type Status, type UntagResult } from "../lib/messages";
+import { buildTagForm, TAG_FORM_CSS } from "../lib/tag-form";
 import { connectUrl, Logo, requestSite } from "../lib/ui";
 import "../lib/page.css";
 
 const opened = performance.now();
-type Status = { connected: boolean; queued: number; apiBase: string };
+type Target = { address: string; kind: "evm" | "solana" | "bitcoin"; existing: ResolvedLabel | null };
 const openTab = (url: string) => chrome.tabs.create({ url });
+const taggable = (kind: string): kind is Target["kind"] => kind === "evm" || kind === "solana" || kind === "bitcoin";
 
-function TagForm({ initial, boot, onDone }: { initial: { address: string; chain: string }; boot: Bootstrap | null; onDone: (msg: string) => void }) {
-  const [address, setAddress] = useState(initial.address), [chain, setChain] = useState(initial.chain);
-  const [displayLabel, setName] = useState(""), [tags, setTags] = useState(""), [notes, setNotes] = useState("");
-  const [listId, setList] = useState(boot?.lastListId && boot.lists.some((l) => l.id === boot.lastListId) ? boot.lastListId : boot?.lists[0]?.id ?? "__new");
-  const [newList, setNewList] = useState(""), [entityId, setEntity] = useState(""), [newEntity, setNewEntity] = useState(""), [error, setError] = useState("");
-  const chosen = boot?.lists.find((l) => l.id === listId);
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setError("");
-    const parsed = parsePastedAddress(address);
-    if (!parsed || parsed.kind === "ens" || parsed.kind === "sns") { setError("Paste a wallet address."); return; }
-    const family = parsed.kind;
-    const resolved = CHAINS[chain as keyof typeof CHAINS]?.family === family ? chain : CHAIN_IDS.find((c) => CHAINS[c].family === family)!;
-    const r = await send<TagResult>({ type: "tag", input: {
-      address: parsed.raw, chain: resolved, displayLabel, notes, tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
-      listId: listId === "__new" ? undefined : listId, newListName: listId === "__new" ? newList || "Research" : undefined,
-      entityId: entityId && entityId !== "__new" ? entityId : undefined, newEntityName: entityId === "__new" ? newEntity || undefined : undefined,
-    } });
-    if (r.ok) onDone(r.queued ? `Saved. Will sync to ${r.listName} when online.` : `Saved to ${r.listName}.`);
-    else setError(r.error);
-  }
+const style = document.createElement("style");
+style.textContent = TAG_FORM_CSS;
+document.head.append(style);
+
+/** Mounts the shared plain-DOM tag form. */
+function TagForm({ target, boot, host, path, onDone, onCancel }: { target: Target | { address: ""; kind?: undefined; existing: null }; boot: Bootstrap | null; host: string; path: string; onDone: (m: string) => void; onCancel: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const form = buildTagForm({ address: target.address, kind: target.kind, existing: target.existing, boot, host, path, onDone, onCancel });
+    ref.current?.replaceChildren(form);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return <div ref={ref} />;
+}
+
+function Switch({ on, label, onChange }: { on: boolean; label: string; onChange: () => void }) {
+  return <button role="switch" aria-checked={on} aria-label={label} className={`switch${on ? " on" : ""}`} onClick={onChange}><span /></button>;
+}
+
+function LabelSummary({ address, labels, onTag, onOpen }: { address: string; labels: ResolvedLabel[]; onTag: () => void; onOpen?: () => void }) {
+  const top = labels[0];
+  const mine = labels.some((l) => l.source === "private");
   return (
-    <form onSubmit={submit}>
-      <label className="f">Address<input className="addr" autoFocus={!initial.address} value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} /></label>
-      <label className="f">Chain<select value={chain} onChange={(e) => setChain(e.target.value)}>{CHAIN_IDS.map((c) => <option key={c} value={c}>{CHAINS[c].name}</option>)}</select></label>
-      <label className="f">Name<input required autoFocus={!!initial.address} value={displayLabel} onChange={(e) => setName(e.target.value)} /></label>
-      <label className="f">Entity<select value={entityId} onChange={(e) => setEntity(e.target.value)}>
-        <option value="">None</option><option value="__new">New entity…</option>
-        {boot?.entities.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-      </select></label>
-      {entityId === "__new" && <input aria-label="Entity name" placeholder="Entity name" value={newEntity} onChange={(e) => setNewEntity(e.target.value)} style={{ marginTop: 4 }} />}
-      <label className="f">Tags<input placeholder="trader, watchlist" value={tags} onChange={(e) => setTags(e.target.value)} /></label>
-      <label className="f">Notes<textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-      <label className="f">List<select value={listId} onChange={(e) => setList(e.target.value)}>
-        {boot?.lists.map((l) => <option key={l.id} value={l.id}>{l.visibility === "shared" ? `${l.name} (shared)` : l.name}</option>)}
-        <option value="__new">New list…</option>
-      </select></label>
-      {listId === "__new" && <input aria-label="List name" placeholder="List name" value={newList} onChange={(e) => setNewList(e.target.value)} style={{ marginTop: 4 }} />}
-      <p className="muted" style={{ margin: "6px 0" }}>{chosen?.visibility === "shared" ? `Shared: members of ${chosen.name} will see this tag.` : "Private: only you will see this tag."}</p>
-      {error && <p role="alert" className="bad" style={{ margin: "6px 0" }}>{error}</p>}
-      <button type="submit" className="primary">Save</button>
-    </form>
+    <div className="card" style={{ padding: 10 }}>
+      <div className="row between">
+        <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{top?.label ?? "Not tagged yet"}</strong>
+        {top && <span className="pill" title={top.provenance}>{top.source === "verified" ? "✓ Verified" : top.source === "private" ? "Your tag" : top.source === "shared" ? "Shared" : "Self-claimed"}</span>}
+      </div>
+      <div className="addr muted" title={address}>{truncateAddress(address)}</div>
+      {top && (top.tags.length > 0 || (top.status && top.status !== "none")) && (
+        <div className="row wrap" style={{ gap: 4, marginTop: 6 }}>
+          {top.status && top.status !== "none" && <span className="pill">{top.status}</span>}
+          {top.tags.slice(0, 5).map((t) => <span key={t} className="pill">{t}</span>)}
+        </div>
+      )}
+      {top?.entity && <p className="muted" style={{ margin: "6px 0 0" }}>{top.entity.name} · {top.entity.linkedWallets} wallet{top.entity.linkedWallets === 1 ? "" : "s"}</p>}
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className={top ? "" : "primary"} style={{ flex: 1 }} onClick={onTag}>{mine ? "Edit tag" : top ? "Add my tag" : "Tag it"}</button>
+        {top && onOpen && <button style={{ flex: 1 }} onClick={onOpen}>Open</button>}
+      </div>
+    </div>
   );
 }
 
@@ -60,8 +61,13 @@ function App() {
   const [tab, setTab] = useState<chrome.tabs.Tab | null>(null);
   const [detected, setDetected] = useState<Detected[]>([]);
   const [granted, setGranted] = useState(false);
-  const [form, setForm] = useState<{ address: string; chain: string } | null>(null);
+  const [form, setForm] = useState<Target | { address: ""; existing: null } | null>(null);
   const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState("");
+  const [lookup, setLookup] = useState<{ address: string; kind: Target["kind"]; labels: ResolvedLabel[] } | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const refreshStatus = async () => setStatus(await send<Status>({ type: "status" }));
 
   const url = useMemo(() => { try { return tab?.url ? new URL(tab.url) : null; } catch { return null; } }, [tab]);
   const host = url && /^https?:$/.test(url.protocol) ? url.hostname : null;
@@ -87,9 +93,22 @@ function App() {
     })();
   }, []);
 
+  // Look up a pasted address as soon as it parses.
+  useEffect(() => {
+    const parsed = parsePastedAddress(query);
+    if (!parsed || !taggable(parsed.kind)) { setLookup(null); return; }
+    const kind = parsed.kind;
+    let live = true;
+    void send<Record<string, ResolvedLabel[]>>({ type: "resolve", addresses: [{ normalized: parsed.normalized, kind }] }).then((r) => {
+      if (live) setLookup({ address: parsed.raw, kind, labels: r?.[parsed.normalized] ?? [] });
+    });
+    return () => { live = false; };
+  }, [query]);
+
   if (!status || !settings) return null;
   const enabled = !!host && granted && !settings.disabledSites.includes(host);
-  const dashboard = () => openTab(`${status.apiBase}/dashboard`);
+  const dashboard = (path = "/dashboard") => openTab(`${status.apiBase}${path}`);
+  const openLabel = (top: ResolvedLabel) => dashboard(top.entity?.slug ? `/p/${top.entity.slug}` : top.walletId ? `/dashboard?w=${top.walletId}` : top.entity ? `/entities/${top.entity.id}` : "/dashboard");
 
   async function toggle() {
     if (!host) return;
@@ -109,81 +128,143 @@ function App() {
   }
 
   const known = detected.filter((d) => d.labels.length);
-  const taggable = detected.filter((d) => d.kind !== "ens" && d.kind !== "sns" && d.kind !== "x");
-  const one = detected.length === 1 ? detected[0] : null;
-  const top = one?.labels[0];
+  const startTag = (address: string, kind: string, labels: ResolvedLabel[]) => {
+    if (taggable(kind)) setForm({ address, kind, existing: labels.find((l) => l.source === "private") ?? null });
+  };
+  const done = (m: string) => {
+    setForm(null); setNotice(m); setQuery("");
+    void refreshStatus();
+    if (tab) setTimeout(() => void scan(tab), 400);
+  };
+  async function remove(d: Detected) {
+    const mine = d.labels.find((l) => l.source === "private");
+    if (!mine) return;
+    setError("");
+    const r = await send<UntagResult>({ type: "untag", address: d.raw, chain: mine.chain });
+    setConfirming(null);
+    if (!r.ok) { setError(r.error); return; }
+    done(r.queued ? "Removed. It will sync when you're back online." : "Removed.");
+  }
+  async function retry(f: FailedTag) {
+    const stillFailing = await send<number>({ type: "retryFailed", normalized: f.normalized });
+    await refreshStatus();
+    setNotice(stillFailing ? "" : "Saved.");
+    if (tab) setTimeout(() => void scan(tab), 400);
+  }
+  async function discard(f: FailedTag) {
+    await send({ type: "discardFailed", normalized: f.normalized });
+    await refreshStatus();
+    if (tab) setTimeout(() => void scan(tab), 400);
+  }
+  const editFailed = (f: FailedTag) => {
+    const kind = f.label.chain === "solana" ? "solana" : f.label.chain === "bitcoin" ? "bitcoin" : "evm";
+    setForm({ address: f.input.address, kind, existing: f.label });
+  };
+
+  if (form) {
+    return (
+      <div className="popup">
+        <div className="row between">
+          <button className="quiet" onClick={() => setForm(null)}>← Back</button>
+          <Logo />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <TagForm target={form} boot={boot} host={host ?? ""} path={url?.pathname ?? ""} onDone={done} onCancel={() => setForm(null)} />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ width: 340, padding: 12 }}>
+    <div className="popup">
       <div className="row between">
         <Logo />
-        <button style={{ minHeight: 26, padding: "0 8px" }} aria-label="Settings" onClick={() => chrome.runtime.openOptionsPage()}>Settings</button>
+        <button className="quiet" aria-label="Settings" onClick={() => chrome.runtime.openOptionsPage()}>Settings</button>
       </div>
 
-      {host && (
-        <label className="row between" style={{ marginTop: 10, padding: "6px 0", borderBlock: "1px solid var(--line)" }}>
-          <span className="muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{host}: {enabled ? "enabled" : "off"}</span>
-          <input type="checkbox" aria-label={`Enable TagAWallet on ${host}`} checked={enabled} onChange={toggle} />
-        </label>
-      )}
       {!status.connected && (
-        <div style={{ marginTop: 10 }}>
-          <p style={{ margin: "0 0 8px" }}>Connect your account to save tags and see labels.</p>
-          <button className="primary" onClick={() => openTab(connectUrl(status.apiBase))}>Connect account</button>
+        <div className="callout row between" style={{ marginTop: 10 }}>
+          <span>{status.authState === "expired" ? "Your session expired. Reconnect to keep saving tags." : "Connect to save tags and see labels."}</span>
+          <button className="primary" style={{ flex: "none" }} onClick={() => openTab(connectUrl(status.apiBase))}>{status.authState === "expired" ? "Reconnect" : "Connect account"}</button>
         </div>
       )}
-      {status.queued > 0 && <p className="muted" style={{ margin: "8px 0 0" }}>{status.queued} tag{status.queued === 1 ? "" : "s"} waiting to sync.</p>}
       {notice && <p role="status" className="good" style={{ margin: "10px 0 0", fontWeight: 500 }}>{notice}</p>}
+      {error && <p role="alert" className="bad" style={{ margin: "10px 0 0" }}>{error}</p>}
 
-      <div style={{ marginTop: 10 }}>
-        {form ? (
-          <>
-            <button style={{ minHeight: 26, padding: "0 8px" }} onClick={() => setForm(null)}>← Back</button>
-            <TagForm initial={form} boot={boot} onDone={(m) => { setForm(null); setNotice(m); if (tab) setTimeout(() => void scan(tab), 400); }} />
-          </>
-        ) : one ? (
-          <div>
-            <div className="addr muted" title={one.raw}>{truncateAddress(one.raw)}</div>
-            <h1 style={{ fontSize: 16, marginTop: 2 }}>{top?.label ?? "Unknown wallet"}</h1>
-            {top ? (
-              <>
-                {top.tags.length > 0 && <p style={{ margin: "6px 0 0" }}>Tags: {top.tags.join(", ")}</p>}
-                {top.entity && <p style={{ margin: "2px 0 0" }}>Wallets linked: {top.entity.linkedWallets}</p>}
-                {top.links.length > 0 && <p style={{ margin: "2px 0 0" }}>{top.links.slice(0, 4).map((l) => l.label || l.type).join(" · ")}</p>}
-                <p className="muted" style={{ margin: "4px 0 0" }}>Source: {top.provenance}</p>
-              </>
-            ) : <p className="muted" style={{ margin: "4px 0 0" }}>Not tagged yet.</p>}
-            <div className="row" style={{ marginTop: 10 }}>
-              {top && <button onClick={() => openTab(status.apiBase + (top.entity?.slug ? `/p/${top.entity.slug}` : top.walletId ? `/wallets/${top.walletId}` : top.entity ? `/entities/${top.entity.id}` : "/dashboard"))}>View profile</button>}
-              {taggable.length > 0 && <button className={top ? "" : "primary"} onClick={() => setForm({ address: one.raw, chain: chainFromHost(host ?? "", one.kind) })}>{top ? "Edit tag" : "Tag this wallet"}</button>}
-            </div>
+      {status.failed.length > 0 && (
+        <section aria-labelledby="attention" style={{ marginTop: 12 }} className="callout">
+          <strong id="attention">Needs attention</strong>
+          <p className="muted" style={{ margin: "2px 0 6px" }}>{status.failed.length === 1 ? "This tag" : "These tags"} couldn&apos;t be saved.</p>
+          <ul className="plain">
+            {status.failed.map((f) => (
+              <li key={f.normalized} style={{ padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                <div className="row between">
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.input.displayLabel}</span>
+                    <span className="addr muted" title={f.input.address}>{truncateAddress(f.input.address)}</span>
+                  </span>
+                </div>
+                <p className="bad" style={{ margin: "2px 0 4px", fontSize: 12 }}>{f.error}</p>
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="small" onClick={() => void retry(f)}>Retry</button>
+                  <button className="small" onClick={() => editFailed(f)}>Edit</button>
+                  <button className="small quiet" onClick={() => void discard(f)}>Discard</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section style={{ marginTop: 12 }}>
+        <input type="search" aria-label="Look up an address" placeholder="Who is this? Paste an address" className="addr" spellCheck={false} value={query} onChange={(e) => setQuery(e.target.value)} />
+        {lookup && <div style={{ marginTop: 8 }}><LabelSummary address={lookup.address} labels={lookup.labels} onTag={() => startTag(lookup.address, lookup.kind, lookup.labels)} onOpen={lookup.labels[0] ? () => openLabel(lookup.labels[0]!) : undefined} /></div>}
+        {!lookup && query.trim() && <p className="muted" style={{ margin: "6px 2px 0" }}>Paste a full EVM, Solana or Bitcoin address.</p>}
+        {!query && <button className="quiet" style={{ marginTop: 4 }} onClick={() => setForm({ address: "", existing: null })}>Paste address to tag</button>}
+      </section>
+
+      {host && (
+        <section style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <div className="row between">
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{host}</span>
+              <span className="muted">{enabled ? (detected.length ? `${detected.length} address${detected.length === 1 ? "" : "es"} on this page · ${known.length} known` : "No wallet detected on this page.") : "Off on this site"}</span>
+            </span>
+            <Switch on={enabled} label={`Enable TagAWallet on ${host}`} onChange={toggle} />
           </div>
-        ) : detected.length > 1 ? (
-          <div>
-            <h1 style={{ fontSize: 14 }}>{detected.length} addresses on this page <span className="muted">{known.length} known</span></h1>
-            <ul className="plain" style={{ marginTop: 6, maxHeight: 280, overflow: "auto" }}>
+          {enabled && detected.length > 0 && (
+            <ul className="plain" style={{ marginTop: 6, maxHeight: 260, overflow: "auto" }}>
               {detected.map((d) => (
-                <li key={d.normalized} className="row between" style={{ padding: "5px 0", borderTop: "1px solid var(--line)" }}>
+                <li key={d.normalized} className="row between" style={{ padding: "6px 0", borderTop: "1px solid var(--line)" }}>
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.labels[0]?.label ?? <span className="muted">Unknown</span>}</span>
                     <span className="addr muted" title={d.raw}>{truncateAddress(d.raw)}</span>
                   </span>
-                  {d.kind !== "ens" && d.kind !== "sns" && d.kind !== "x" && <button style={{ minHeight: 26, padding: "0 8px", flex: "none" }} onClick={() => setForm({ address: d.raw, chain: d.chain })}>{d.labels.some((l) => l.source === "private") ? "Edit" : "Tag"}</button>}
+                  {taggable(d.kind) && confirming !== d.normalized && (
+                    <span className="row" style={{ gap: 4, flex: "none" }}>
+                      <button className="small" onClick={() => startTag(d.raw, d.kind, d.labels)}>{d.labels.some((l) => l.source === "private") ? "Edit" : "Tag"}</button>
+                      {d.labels.some((l) => l.source === "private") && <button className="small quiet" aria-label={`Remove tag ${d.labels[0]?.label ?? ""}`} onClick={() => setConfirming(d.normalized)}>Remove</button>}
+                    </span>
+                  )}
+                  {confirming === d.normalized && (
+                    <span className="row" style={{ gap: 4, flex: "none" }}>
+                      <button className="small primary" onClick={() => void remove(d)}>Remove tag</button>
+                      <button className="small quiet" onClick={() => setConfirming(null)}>Keep</button>
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
-          </div>
-        ) : (
-          <div>
-            <p style={{ margin: "0 0 10px" }}>No wallet detected on this page.</p>
-            <div className="row wrap">
-              <button className="primary" onClick={() => setForm({ address: "", chain: "ethereum" })}>Paste address to tag</button>
-              <button onClick={dashboard}>Open dashboard</button>
-            </div>
-          </div>
-        )}
+          )}
+          {!enabled && <p className="muted" style={{ margin: "6px 0 0" }}>Turn it on to see names next to addresses here. Only addresses are looked up, never the page.</p>}
+        </section>
+      )}
+      {!host && <p className="muted" style={{ margin: "12px 0 0" }}>Open a website to see wallets on it. Browser pages like this one can&apos;t be scanned.</p>}
+      {status.queued > 0 && <p className="muted" style={{ margin: "8px 0 0" }}>{status.queued} tag{status.queued === 1 ? "" : "s"} waiting to sync.</p>}
+
+      <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 8 }}>
+        <button className="quiet" onClick={() => dashboard()}>Open dashboard</button>
       </div>
-      {(one || detected.length > 1 || form) && !form && <p style={{ margin: "10px 0 0" }}><a href="#" onClick={(e) => { e.preventDefault(); dashboard(); }} className="muted">Open dashboard</a></p>}
     </div>
   );
 }

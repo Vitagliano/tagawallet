@@ -2,90 +2,118 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
-import useSWR from "swr";
-import { api, fetcher } from "@/lib/client";
-import { Button, ErrorNote, Field, Input, Logo, Modal, Textarea, VisibilityPill } from "./ui";
+import { Suspense, useState } from "react";
+import { api } from "@/lib/client";
+import { Logo } from "./ui";
+import { Menu, menuItem, ToastProvider } from "./kit";
+import { WalletDrawer } from "./wallet-drawer";
+import { CommandPalette } from "./command-palette";
+import { CreateProvider, KindIcon, useCreate } from "./collections";
 
 const NAV = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/search", label: "Search" },
-  { href: "/entities", label: "Entities" },
-  { href: "/settings", label: "Settings" },
+  { href: "/dashboard", label: "Wallets", also: [] as string[] },
+  { href: "/lists", label: "Lists", also: ["/entities"] },
 ];
 
-export function NewListModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const router = useRouter();
-  const { mutate } = useSWR("/api/lists", fetcher);
-  const [name, setName] = useState(""), [description, setDescription] = useState(""), [error, setError] = useState("");
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      const list = await api("/api/lists", { body: { name, description } });
-      await mutate();
-      setName(""); setDescription(""); onClose();
-      router.push(`/lists/${list.id}`);
-    } catch (err) { setError((err as Error).message); }
-  }
+/** Until the address is confirmed, a quiet reminder with a way to resend. Hidden for this tab once dismissed. */
+function VerifyEmailBanner({ email }: { email: string }) {
+  const [hidden, setHidden] = useState(() => { try { return sessionStorage.getItem("taw-verify-dismissed") === "1"; } catch { return false; } });
+  const [sent, setSent] = useState(""), [error, setError] = useState("");
+  if (hidden) return null;
   return (
-    <Modal open={open} onClose={onClose} title="New list">
-      <form onSubmit={create} className="space-y-3">
-        <Field label="Name"><Input required autoFocus maxLength={80} value={name} placeholder="Research" onChange={(e) => setName(e.target.value)} /></Field>
-        <Field label="Description"><Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
-        <p className="text-sm text-muted">New lists are private. Only you can see this until you invite someone.</p>
-        <ErrorNote>{error}</ErrorNote>
-        <Button type="submit" variant="primary">Create list</Button>
-      </form>
-    </Modal>
+    <div role="region" aria-label="Verify your email" className="mx-auto mt-3 flex max-w-5xl flex-wrap items-center gap-x-3 gap-y-1 px-4 md:px-6">
+      <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-card px-4 py-2.5 text-sm">
+        <span className="min-w-0 flex-1">{sent || error || <>Confirm <b>{email}</b> to publish profiles and invite people by email.</>}</span>
+        {!sent && (
+          <button className="font-medium underline-offset-2 hover:underline" onClick={async () => {
+            setError("");
+            try { await api("/api/account/verify-email", { method: "POST" }); setSent(`Sent. Check ${email} for the link.`); }
+            catch (e) { setError((e as Error).message); }
+          }}>Resend link</button>
+        )}
+        <button aria-label="Dismiss" className="text-muted hover:text-ink" onClick={() => { setHidden(true); try { sessionStorage.setItem("taw-verify-dismissed", "1"); } catch { /* private mode */ } }}>✕</button>
+      </div>
+    </div>
   );
 }
 
-export function AppShell({ children, user }: { children: React.ReactNode; user: { displayName: string; isAdmin: boolean } }) {
+export function AppShell({ children, user }: { children: React.ReactNode; user: { displayName: string; isAdmin: boolean; email?: string | null; emailVerified?: boolean } }) {
   const path = usePathname();
   const router = useRouter();
-  const { data: lists } = useSWR<any[]>("/api/lists", fetcher);
-  const [creating, setCreating] = useState(false);
-  const [menu, setMenu] = useState(false);
+  const [palette, setPalette] = useState(false);
   const active = (href: string) => path === href || path.startsWith(href + "/");
-  const linkClass = (on: boolean) => `flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-sm ${on ? "bg-wash font-medium" : "text-muted hover:bg-wash hover:text-ink"}`;
+  const tab = (on: boolean) => `inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-medium transition ${on ? "bg-card text-ink" : "text-muted hover:bg-card/60 hover:text-ink"}`;
+  const signOut = async () => { await api("/api/auth/logout", { method: "POST" }); router.push("/login"); router.refresh(); };
+  const initial = user.displayName.trim()[0]?.toUpperCase() ?? "?";
 
   return (
-    <div className="md:grid md:min-h-dvh md:grid-cols-[15rem_1fr]">
-      <aside className="border-b border-line md:sticky md:top-0 md:h-dvh md:overflow-y-auto md:border-b-0 md:border-r">
-        <div className="flex items-center justify-between p-4">
-          <Link href="/dashboard"><Logo /></Link>
-          <Button variant="ghost" className="md:hidden" aria-expanded={menu} onClick={() => setMenu(!menu)}>Menu</Button>
-        </div>
-        <div className={`${menu ? "block" : "hidden"} space-y-6 px-3 pb-4 md:block`}>
-          <nav className="space-y-0.5">
-            {NAV.map((n) => <Link key={n.href} href={n.href} onClick={() => setMenu(false)} className={linkClass(active(n.href))}>{n.label}</Link>)}
-            {user.isAdmin && <Link href="/admin/reports" className={linkClass(active("/admin"))}>Moderation</Link>}
+    <ToastProvider>
+    <CreateProvider>
+    <div className="min-h-dvh">
+      <header className="sticky top-0 z-30 bg-paper">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 md:px-6">
+          <Link href="/dashboard" aria-label="TagAWallet home" className="shrink-0"><Logo /></Link>
+
+          <nav aria-label="Main" className="order-last -mx-3 flex w-full items-center gap-1 md:order-none md:mx-0 md:w-auto">
+            {NAV.map((n) => { const on = active(n.href) || n.also.some(active); return <Link key={n.href} href={n.href} aria-current={on ? "page" : undefined} className={tab(on)}>{n.label}</Link>; })}
+            {user.isAdmin && <Link href="/admin/reports" className={tab(active("/admin"))}>Moderation</Link>}
           </nav>
-          <div>
-            <div className="mb-1 flex items-center justify-between px-2.5">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-muted">Lists</h2>
-              <button className="px-1 text-muted hover:text-ink" aria-label="New list" onClick={() => setCreating(true)}>+</button>
-            </div>
-            <ul className="space-y-0.5">
-              {lists?.map((l) => (
-                <li key={l.id}>
-                  <Link href={`/lists/${l.id}`} onClick={() => setMenu(false)} className={linkClass(path === `/lists/${l.id}`)}>
-                    <span className="truncate">{l.name}</span>
-                    {l.visibility !== "private" ? <VisibilityPill visibility={l.visibility} /> : <span className="text-xs">{l.walletCount}</span>}
-                  </Link>
-                </li>
-              ))}
-              {lists?.length === 0 && <li className="px-2.5 text-sm text-muted">No lists yet</li>}
-            </ul>
-          </div>
-          <div className="flex items-center justify-between border-t border-line px-2.5 pt-3 text-sm">
-            <span className="truncate text-muted">{user.displayName}</span>
-            <button className="text-muted hover:text-ink" onClick={async () => { await api("/api/auth/logout", { method: "POST" }); router.push("/login"); router.refresh(); }}>Sign out</button>
+
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setPalette(true)} aria-label="Search"
+              className="inline-flex h-9 items-center gap-6 rounded-xl bg-card px-3 text-sm text-muted hover:text-ink">
+              <span className="flex items-center gap-2"><span aria-hidden>⌕</span><span className="hidden sm:inline">Search</span></span>
+              <kbd className="hidden font-sans text-xs sm:inline">⌘K</kbd>
+            </button>
+            <NewMenu />
+            <Menu label={<span aria-hidden className="grid size-8 place-items-center rounded-full bg-accent text-sm font-semibold text-accent-ink">{initial}</span>}
+              buttonClass="rounded-full" ariaLabel="Account menu">
+              {(close) => (
+                <>
+                  <div className="mb-1 border-b border-line px-2.5 pt-1.5 pb-2.5">
+                    <p className="truncate font-medium">{user.displayName}</p>
+                    {user.email && <p className="truncate text-xs text-muted">{user.email}</p>}
+                  </div>
+                  <Link href="/settings" onClick={close} className={menuItem}>Settings</Link>
+                  <Link href="/settings#sign-in" onClick={close} className={menuItem}>Sign-in methods</Link>
+                  <Link href="/settings#profiles" onClick={close} className={menuItem}>Public profiles</Link>
+                  <a href="/api/account/export" onClick={close} className={menuItem}>Export my data</a>
+                  <div className="my-1 border-t border-line" />
+                  <button className={menuItem} onClick={() => { close(); void signOut(); }}>Sign out</button>
+                </>
+              )}
+            </Menu>
           </div>
         </div>
-      </aside>
-      <main className="mx-auto w-full max-w-5xl px-4 py-6 md:px-8">{children}</main>
-      <NewListModal open={creating} onClose={() => setCreating(false)} />
+      </header>
+      {user.email && user.emailVerified === false && <VerifyEmailBanner email={user.email} />}
+      <main className="mx-auto w-full max-w-5xl px-4 pt-4 pb-12 md:px-6">{children}</main>
+      <Suspense>
+        <WalletDrawer />
+        <CommandPalette open={palette} onOpenChange={setPalette} />
+      </Suspense>
     </div>
+    </CreateProvider>
+    </ToastProvider>
+  );
+}
+
+/** The one place to start anything new, on every page. */
+function NewMenu() {
+  const { addWallet, newList } = useCreate();
+  return (
+    <Menu label={<><span aria-hidden className="text-base leading-none">+</span><span className="hidden sm:inline">New</span></>} ariaLabel="Create new"
+      buttonClass="inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-xl bg-accent px-3 text-sm font-semibold text-accent-ink hover:opacity-90">
+      {(close) => (
+        <>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); addWallet(); }}>
+            <span aria-hidden className="grid size-4 place-items-center font-mono text-xs text-muted">0x</span>Wallet
+          </button>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("list"); }}><KindIcon kind="list" className="text-muted" />List</button>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("person"); }}><KindIcon kind="person" className="text-muted" />Person</button>
+          <button className={`${menuItem} flex items-center gap-2`} onClick={() => { close(); newList("project"); }}><KindIcon kind="project" className="text-muted" />Project</button>
+        </>
+      )}
+    </Menu>
   );
 }

@@ -3,7 +3,8 @@ import { isIP } from "node:net";
 import { createPublicClient, http, verifyMessage } from "viem";
 import { mainnet } from "viem/chains";
 import { normalize } from "viem/ens";
-import { sanitizeUrl } from "@tagawallet/shared";
+import { isValidSolanaAddress, sanitizeUrl } from "@tagawallet/shared";
+import { verifySolanaSignature } from "./solana";
 
 export const verifyToken = (code: string) => `tagawallet-verify=${code}`;
 export const signatureMessage = (entity: string, address: string, code: string) =>
@@ -79,5 +80,7 @@ export async function checkXPost(postUrl: string, handleUrl: string, code: strin
 }
 
 export async function checkSignature(address: string, message: string, signature: string) {
+  if (isValidSolanaAddress(address)) return verifySolanaSignature(address, message, signature);
+  if (!/^0x[0-9a-f]+$/i.test(signature)) return false;
   return verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` }).catch(() => false);
 }

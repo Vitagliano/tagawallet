@@ -36,3 +36,6 @@ body { background: var(--paper); color: var(--ink); font-family: var(--font-sans
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .addr { font-family: var(--font-mono); font-size: 0.86em; letter-spacing: -0.01em; }
 dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+
+@keyframes slide { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+dialog[aria-label="Wallet"] { margin-block: 0; }

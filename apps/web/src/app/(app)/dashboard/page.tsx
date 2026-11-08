@@ -1,100 +1,52 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { Suspense } from "react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/client";
-import { Button, Empty, Pill, VerificationPill, VisibilityPill } from "@/components/ui";
-import { QuickAddWallet } from "@/components/wallet-form";
-import { WalletTable } from "@/components/wallet-table";
-import { NewListModal } from "@/components/app-shell";
+import { api, fetcher } from "@/lib/client";
+import { WalletsView } from "@/components/wallets-view";
+import { Help } from "@/components/kit";
 
-function Onboarding({ state, onNewList }: { state: Record<string, boolean>; onNewList: () => void }) {
+/** Two steps are all it takes to get value: tag one wallet, then see names in the browser. */
+function Onboarding({ state, onDismiss }: { state: { wallet: boolean; extension: boolean }; onDismiss: () => void }) {
+  if (state.wallet && state.extension) return null;
   const steps = [
-    { key: "list", label: "Create your first list", action: <button className="underline" onClick={onNewList}>Create</button> },
-    { key: "wallet", label: "Add a wallet", action: <span className="text-muted">Use the form on this page</span> },
-    { key: "entity", label: "Group wallets under an entity", action: <Link className="underline" href="/entities">Open entities</Link> },
-    { key: "link", label: "Link a social account to an entity", action: <Link className="underline" href="/entities">Open entities</Link> },
-    { key: "extension", label: "Connect the browser extension", action: <Link className="underline" href="/settings#extension">Set up</Link> },
+    { done: state.wallet, label: "Tag your first wallet", hint: "Use Add wallet below, or + New at the top of any page." },
+    { done: state.extension, label: "Connect the browser extension", hint: <>See your names next to addresses on explorers and X. <Link className="underline" href="/settings#extension">Set up</Link></> },
   ];
-  const done = steps.filter((s) => state[s.key]).length;
   return (
-    <section className="rounded-xl border border-line bg-card p-4">
-      <h2 className="font-semibold">Getting started <span className="ml-1 text-sm font-normal text-muted">{done} of {steps.length}</span></h2>
-      <ol className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-        {steps.map((s) => (
-          <li key={s.key} className="flex items-center gap-2">
-            <span aria-hidden className={state[s.key] ? "text-good" : "text-muted"}>{state[s.key] ? "✓" : "○"}</span>
-            <span className={state[s.key] ? "text-muted line-through" : ""}>{s.label}</span>
-            {!state[s.key] && <span className="ml-auto text-xs">{s.action}</span>}
-          </li>
-        ))}
-      </ol>
+    <section aria-label="Getting started" className="flex flex-wrap items-start gap-x-8 gap-y-3 rounded-2xl bg-card px-4 py-3">
+      <h2 className="w-full text-sm font-semibold sm:w-auto">Getting started</h2>
+      {steps.map((s) => (
+        <div key={s.label} className="flex min-w-0 flex-1 basis-56 gap-2 text-sm">
+          <span aria-hidden className={s.done ? "text-good" : "text-muted"}>{s.done ? "✓" : "○"}</span>
+          <span className="min-w-0">
+            <span className={s.done ? "text-muted line-through" : "font-medium"}>{s.label}</span>
+            {!s.done && <span className="block text-xs text-muted">{s.hint}</span>}
+          </span>
+        </div>
+      ))}
+      <button className="ml-auto text-xs text-muted hover:text-ink" aria-label="Dismiss getting started" onClick={onDismiss}>✕</button>
     </section>
   );
 }
 
-export default function Dashboard() {
+export default function WalletsHome() {
   const { data } = useSWR("/api/dashboard", fetcher);
-  const { data: lists } = useSWR<any[]>("/api/lists", fetcher);
-  const [creating, setCreating] = useState(false);
-  const allDone = data && Object.values(data.onboarding).every(Boolean);
-
+  const { data: session, mutate } = useSWR("/api/auth/session", fetcher);
+  // Dismissing is saved to the account, so it stays dismissed on every device.
+  const dismiss = async () => {
+    await mutate({ user: { ...session.user, onboardingDismissed: true } }, { revalidate: false });
+    await api("/api/account", { method: "PATCH", body: { onboardingDismissed: true } });
+  };
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-      {data && !allDone && <Onboarding state={data.onboarding} onNewList={() => setCreating(true)} />}
-
-      <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
-        <div className="space-y-6">
-          <section>
-            <h2 className="mb-2 font-semibold">Recent wallets</h2>
-            {data?.wallets.length ? <WalletTable wallets={data.wallets} /> : data && <Empty title="No wallets yet">Paste an address to tag your first one.</Empty>}
-          </section>
-          <section>
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="font-semibold">Recent entities</h2>
-              <Link href="/entities" className="text-sm text-muted hover:underline">All entities</Link>
-            </div>
-            {data?.entities.length ? (
-              <ul className="grid gap-2 sm:grid-cols-2">
-                {data.entities.map((e: any) => (
-                  <li key={e.id}>
-                    <Link href={`/entities/${e.id}`} className="block rounded-xl border border-line bg-card p-3 hover:bg-wash">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-medium">{e.name}</span>
-                        <VerificationPill status={e.verification?.status} />
-                      </div>
-                      <div className="mt-1 text-xs capitalize text-muted">{e.type}</div>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            ) : data && <Empty title="No entities yet">An entity groups the wallets of one person, project or team.</Empty>}
-          </section>
-        </div>
-        <div className="space-y-6">
-          <section className="rounded-xl border border-line bg-card p-4">
-            <h2 className="mb-3 font-semibold">Quick add</h2>
-            {lists && <QuickAddWallet key={lists[0]?.id ?? "none"} lists={lists.filter((l) => l.role !== "viewer")} />}
-          </section>
-          <section className="rounded-xl border border-line bg-card p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="font-semibold">Lists</h2>
-              <Button variant="ghost" onClick={() => setCreating(true)}>New</Button>
-            </div>
-            <ul className="space-y-1.5 text-sm">
-              {lists?.map((l) => (
-                <li key={l.id} className="flex items-center justify-between gap-2">
-                  <Link href={`/lists/${l.id}`} className="truncate hover:underline">{l.name}</Link>
-                  <span className="flex shrink-0 items-center gap-2"><Pill>{l.walletCount}</Pill><VisibilityPill visibility={l.visibility} /></span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Wallets</h1>
+        <Help>Every address you&apos;ve named, private to you. Organize them into lists whenever it helps, or don&apos;t.</Help>
       </div>
-      <NewListModal open={creating} onClose={() => setCreating(false)} />
+      {data && session?.user && !session.user.onboardingDismissed && <Onboarding state={data.onboarding} onDismiss={dismiss} />}
+      <Suspense><WalletsView /></Suspense>
     </div>
   );
 }

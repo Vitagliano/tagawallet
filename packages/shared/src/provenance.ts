@@ -22,6 +22,8 @@ export interface ResolvedLabel {
   status?: string;
   notes?: string;
   entity?: { id: string; name: string; slug?: string; verification: string; linkedWallets: number };
+  /** For a public claim: the wallet-to-profile link, so that one wallet's label can be reported. */
+  linkId?: string;
   links: { type: string; url: string; label?: string }[];
   listName?: string;
   shared: boolean;
@@ -30,6 +32,8 @@ export interface ResolvedLabel {
 export interface ResolveResult {
   normalized: string;
   labels: ResolvedLabel[];
+  /** For an ENS name: the address it points to on-chain, so an untagged name can still be tagged. */
+  address?: string;
 }
 
 // Strongest claim the viewer has made first: their own words beat anyone else's.

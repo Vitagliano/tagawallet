@@ -1,5 +1,6 @@
 "use client";
 
+import { BrandMark } from "./brand-mark";
 import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, forwardRef } from "react";
 import { CHAINS, type ChainId, truncateAddress } from "@tagawallet/shared";
 
@@ -47,7 +48,7 @@ export function Modal({ open, onClose, title, children }: { open: boolean; onClo
     if (!open && d?.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} className="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-xl border border-line bg-card p-0 text-ink">
+    <dialog ref={ref} onClose={onClose} aria-label={title} className="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-2xl bg-card p-0 text-ink">
       {open && (
         <div className="p-5">
           <div className="mb-4 flex items-center justify-between gap-4">
@@ -95,7 +96,7 @@ export function Address({ value, full }: { value: string; full?: boolean }) {
 
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="rounded-xl border border-dashed border-line px-6 py-10 text-center">
+    <div className="rounded-2xl bg-card px-6 py-10 text-center">
       <p className="font-medium">{title}</p>
       {children && <div className="mt-2 text-sm text-muted">{children}</div>}
     </div>
@@ -108,10 +109,7 @@ export function ErrorNote({ children }: { children: ReactNode }) {
 export function Logo({ className = "" }: { className?: string }) {
   return (
     <span className={`inline-flex items-center gap-2 font-semibold tracking-tight ${className}`}>
-      <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden fill="none">
-        <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h7.4c.4 0 .8.16 1.06.44l7.6 7.6a1.5 1.5 0 0 1 0 2.12l-7.4 7.4a1.5 1.5 0 0 1-2.12 0l-7.6-7.6A1.5 1.5 0 0 1 3 11.9V4.5Z" fill="var(--accent)" />
-        <circle cx="8" cy="8" r="1.8" fill="var(--paper)" />
-      </svg>
+      <BrandMark size={26} />
       TagAWallet
     </span>
   );

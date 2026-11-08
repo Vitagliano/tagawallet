@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createSession, loginWithIdentity, SESSION_COOKIE, sessionCookie, userFromToken } from "@/lib/auth";
+import { createSession, IdentityTakenError, loginWithIdentity, SESSION_COOKIE, sessionCookie, userFromToken } from "@/lib/auth";
 import { appUrl } from "@/lib/email";
 
 async function exchange(provider: string, code: string, verifier: string) {
@@ -37,9 +37,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ prov
     if (state !== req.nextUrl.searchParams.get("state")) return fail();
     const profile = await exchange(provider, code, verifier);
     const current = await userFromToken(req.cookies.get(SESSION_COOKIE)?.value);
-    const user = await loginWithIdentity({ provider, ...profile, current });
+    let user;
+    try { user = await loginWithIdentity({ provider, ...profile, current }); }
+    catch (err) {
+      if (err instanceof IdentityTakenError) return NextResponse.redirect(`${appUrl()}/settings?link_error=${provider}#sign-in`);
+      throw err;
+    }
     const session = await createSession(user._id);
-    const res = NextResponse.redirect(`${appUrl()}/dashboard`);
+    // Linking from Settings goes back there, so the person sees it worked.
+    const res = NextResponse.redirect(current ? `${appUrl()}/settings?linked=${provider}#sign-in` : `${appUrl()}/dashboard`);
     res.headers.append("Set-Cookie", sessionCookie(session.token, session.maxAge));
     res.cookies.delete({ name: "taw_oauth", path: "/api/auth/oauth" });
     return res;

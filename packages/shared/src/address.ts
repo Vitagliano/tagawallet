@@ -26,6 +26,11 @@ export function isValidEvmAddress(address: string): boolean {
   return toChecksumAddress(address) === address;
 }
 
+/** Raw bytes of a base58 string, such as a Solana public key or signature. Throws on bad input. */
+export function decodeBase58(value: string): Uint8Array {
+  return base58.decode(value);
+}
+
 export function isValidSolanaAddress(address: string): boolean {
   if (!SOLANA_RE.test(address)) return false;
   try {

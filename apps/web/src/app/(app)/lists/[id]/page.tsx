@@ -1,74 +1,14 @@
 "use client";
 
-import { use, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, use, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR, { useSWRConfig } from "swr";
 import { api, fetcher } from "@/lib/client";
 import { Button, Empty, ErrorNote, Field, Input, Modal, Select, Textarea, VisibilityPill } from "@/components/ui";
-import { QuickAddWallet } from "@/components/wallet-form";
-import { WalletTable } from "@/components/wallet-table";
-
-function MoveDialog({ wallet, listId, onClose }: { wallet: any; listId: string; onClose: () => void }) {
-  const { data: lists } = useSWR<any[]>("/api/lists", fetcher);
-  const { mutate } = useSWRConfig();
-  const [target, setTarget] = useState(""), [error, setError] = useState("");
-  async function go(move: boolean) {
-    try {
-      await api(`/api/lists/${target}/wallets`, { body: { walletId: wallet.id, moveFrom: move ? listId : undefined } });
-      mutate((k) => typeof k === "string" && k.startsWith("/api/"));
-      onClose();
-    } catch (e) { setError((e as Error).message); }
-  }
-  return (
-    <Modal open onClose={onClose} title="Move or copy wallet">
-      <div className="space-y-3">
-        <Field label="Destination">
-          <Select value={target} onChange={(e) => setTarget(e.target.value)}>
-            <option value="">Choose a list…</option>
-            {lists?.filter((l) => l.id !== listId && l.role !== "viewer").map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-          </Select>
-        </Field>
-        <ErrorNote>{error}</ErrorNote>
-        <div className="flex gap-2">
-          <Button variant="primary" disabled={!target} onClick={() => go(true)}>Move</Button>
-          <Button disabled={!target} onClick={() => go(false)}>Copy</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function ImportDialog({ listId, onClose }: { listId: string; onClose: () => void }) {
-  const { mutate } = useSWRConfig();
-  const file = useRef<HTMLInputElement>(null);
-  const [result, setResult] = useState<any>(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  async function run() {
-    const f = file.current?.files?.[0];
-    if (!f) return;
-    setBusy(true); setError("");
-    try {
-      const format = f.name.toLowerCase().endsWith(".json") ? "json" : "csv";
-      setResult(await api("/api/wallets/import", { body: { listId, format, content: await f.text() } }));
-      mutate((k) => typeof k === "string" && k.startsWith("/api/"));
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  return (
-    <Modal open onClose={onClose} title="Import wallets">
-      <div className="space-y-3">
-        <p className="text-sm text-muted">A CSV with an <code>address</code> column, and optionally <code>chain</code>, <code>label</code>, <code>status</code>, <code>tags</code> and <code>notes</code>. Or a JSON array with the same fields.</p>
-        <input ref={file} type="file" accept=".csv,.json" aria-label="File to import" className="block w-full text-sm" />
-        <ErrorNote>{error}</ErrorNote>
-        {result && (
-          <div role="status" className="rounded-md bg-wash p-3 text-sm">
-            <p>{result.imported} imported, {result.duplicates} already in this list, {result.errorCount} skipped.</p>
-            {result.errors.length > 0 && <ul className="mt-2 max-h-32 overflow-auto text-xs text-muted">{result.errors.map((e: any) => <li key={e.row}>Row {e.row}: {e.message}</li>)}</ul>}
-          </div>
-        )}
-        <Button variant="primary" onClick={run} disabled={busy}>{busy ? "Importing…" : "Import"}</Button>
-      </div>
-    </Modal>
-  );
-}
+import { WalletsView } from "@/components/wallets-view";
+import { Menu, menuItem } from "@/components/kit";
+import { KindIcon } from "@/components/collections";
+import { ImportDialog } from "@/components/import-dialog";
 
 function SharePanel({ list, onChange }: { list: any; onChange: () => void }) {
   const [email, setEmail] = useState(""), [role, setRole] = useState("viewer"), [url, setUrl] = useState(""), [error, setError] = useState("");
@@ -83,7 +23,7 @@ function SharePanel({ list, onChange }: { list: any; onChange: () => void }) {
   }
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted">Members can see the name, notes and tags of every wallet in this list. Your entity links stay private unless you set a link to shared.</p>
+      <p className="text-sm text-muted">People here see the name, labels and notes of every wallet in this list. Who a wallet belongs to stays private unless you choose otherwise on that person or project.</p>
       <ul className="divide-y divide-line text-sm">
         <li className="flex justify-between py-2"><span>{list.owner.name}</span><span className="text-muted">Owner</span></li>
         {list.collaborators.map((c: any) => (
@@ -100,6 +40,22 @@ function SharePanel({ list, onChange }: { list: any; onChange: () => void }) {
           </li>
         ))}
       </ul>
+      {manager && list.invites?.length > 0 && (
+        <div className="space-y-1 border-t border-line pt-3">
+          <h3 className="text-xs font-medium text-muted">Pending invitations</h3>
+          <ul className="divide-y divide-line text-sm">
+            {list.invites.map((inv: any) => (
+              <li key={inv.id} className="flex items-center justify-between gap-2 py-2">
+                <span className="min-w-0 truncate">{inv.email ?? "Invite link"} <span className="text-muted">· {inv.role} · expires {new Date(inv.expiresAt).toLocaleDateString()}</span></span>
+                <Button variant="ghost" aria-label={`Revoke invitation ${inv.email ?? "link"}`} onClick={async () => {
+                  setError("");
+                  try { await api(`/api/lists/${list.id}/invites/${inv.id}`, { method: "DELETE" }); onChange(); } catch (e) { setError((e as Error).message); }
+                }}>Revoke</Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {manager && (
         <div className="space-y-2 border-t border-line pt-4">
           <div className="flex gap-2">
@@ -134,13 +90,18 @@ function Activity({ id }: { id: string }) {
 }
 
 export default function ListPage({ params }: { params: Promise<{ id: string }> }) {
+  return <Suspense><ListInner params={params} /></Suspense>;
+}
+
+function ListInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const { mutate: mutateAll } = useSWRConfig();
   const { data: list, error, mutate } = useSWR(`/api/lists/${id}`, fetcher);
-  const { data, mutate: mutateWallets } = useSWR(`/api/lists/${id}/wallets`, fetcher);
-  const [dialog, setDialog] = useState<null | "add" | "import" | "share" | "edit" | "delete" | "activity">(null);
-  const [moving, setMoving] = useState<any>(null);
+  const [dialog, setDialog] = useState<null | "import" | "share" | "edit" | "delete" | "activity">(null);
+  // Right after creating a list, the next step is inviting people.
+  const wantsShare = useSearchParams().get("share") === "1";
+  useEffect(() => { if (wantsShare) { setDialog("share"); router.replace(`/lists/${id}`, { scroll: false }); } }, [wantsShare]); // eslint-disable-line react-hooks/exhaustive-deps
   const [form, setForm] = useState({ name: "", description: "" });
 
   if (error) return <Empty title="List not found">It may have been deleted, or you may not have access.</Empty>;
@@ -153,45 +114,40 @@ export default function ListPage({ params }: { params: Promise<{ id: string }> }
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
+            <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-lg bg-wash text-muted"><KindIcon kind="list" /></span>
             <h1 className="truncate text-2xl font-semibold tracking-tight">{list.name}</h1>
             <VisibilityPill visibility={list.visibility} />
             {list.archivedAt && <span className="text-sm text-muted">Archived</span>}
           </div>
-          {list.description && <p className="mt-1 text-sm text-muted">{list.description}</p>}
+          <p className="mt-1 text-sm text-muted">{list.description || (list.collaborators.length
+            ? `Shared with ${list.collaborators.length} ${list.collaborators.length === 1 ? "person" : "people"}. They see the names, labels and notes of wallets here.`
+            : "Not shared with anyone yet. Invite people to share these wallets with them.")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {canEdit && <Button variant="primary" onClick={() => setDialog("add")}>Add wallet</Button>}
-          {canEdit && <Button onClick={() => setDialog("import")}>Import</Button>}
-          <Button onClick={() => setDialog("share")}>Share</Button>
-          <details className="relative">
-            <summary className="flex min-h-9 cursor-pointer list-none items-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash">More</summary>
-            <div className="absolute right-0 z-10 mt-1 w-48 rounded-lg border border-line bg-card p-1 text-sm">
-              <a className="block rounded px-2 py-1.5 hover:bg-wash" href={`/api/lists/${id}/export?format=csv`}>Export CSV</a>
-              <a className="block rounded px-2 py-1.5 hover:bg-wash" href={`/api/lists/${id}/export?format=json`}>Export JSON</a>
-              <button className="block w-full rounded px-2 py-1.5 text-left hover:bg-wash" onClick={() => setDialog("activity")}>Activity</button>
-              <button className="block w-full rounded px-2 py-1.5 text-left hover:bg-wash" onClick={async () => { const c = await api(`/api/lists/${id}/duplicate`, { method: "POST" }); refreshLists(); router.push(`/lists/${c.id}`); }}>Duplicate</button>
-              {canEdit && <button className="block w-full rounded px-2 py-1.5 text-left hover:bg-wash" onClick={() => { setForm({ name: list.name, description: list.description ?? "" }); setDialog("edit"); }}>Rename</button>}
-              {canEdit && <button className="block w-full rounded px-2 py-1.5 text-left hover:bg-wash" onClick={async () => { await api(`/api/lists/${id}`, { method: "PATCH", body: { archived: !list.archivedAt } }); mutate(); refreshLists(); }}>{list.archivedAt ? "Unarchive" : "Archive"}</button>}
-              {list.role === "owner" && <button className="block w-full rounded px-2 py-1.5 text-left text-bad hover:bg-wash" onClick={() => setDialog("delete")}>Delete list</button>}
-            </div>
-          </details>
+          <Button variant="primary" onClick={() => setDialog("share")}>{list.collaborators.length ? `Shared with ${list.collaborators.length}` : "Share"}</Button>
+          <Menu label="More">
+            {(close) => (
+              <>
+                {canEdit && <button className={menuItem} onClick={() => { close(); setDialog("import"); }}>Import CSV or JSON</button>}
+                <a className={menuItem} href={`/api/lists/${id}/export?format=csv`}>Export CSV</a>
+                <a className={menuItem} href={`/api/lists/${id}/export?format=json`}>Export JSON</a>
+                <button className={menuItem} onClick={() => { close(); setDialog("activity"); }}>Activity</button>
+                <button className={menuItem} onClick={async () => { close(); const c = await api(`/api/lists/${id}/duplicate`, { method: "POST" }); refreshLists(); router.push(`/lists/${c.id}`); }}>Duplicate</button>
+                {canEdit && <button className={menuItem} onClick={() => { close(); setForm({ name: list.name, description: list.description ?? "" }); setDialog("edit"); }}>Rename</button>}
+                {canEdit && <button className={menuItem} onClick={async () => { close(); await api(`/api/lists/${id}`, { method: "PATCH", body: { archived: !list.archivedAt } }); mutate(); refreshLists(); }}>{list.archivedAt ? "Unarchive" : "Archive"}</button>}
+                {list.role === "owner" && <button className={`${menuItem} text-bad`} onClick={() => { close(); setDialog("delete"); }}>Delete list</button>}
+              </>
+            )}
+          </Menu>
         </div>
       </header>
 
-      {data?.wallets.length ? (
-        <WalletTable wallets={data.wallets} actions={canEdit ? (w) => (
-          <span className="flex gap-1">
-            <Button variant="ghost" onClick={() => setMoving(w)}>Move</Button>
-            <Button variant="ghost" onClick={async () => { await api(`/api/lists/${id}/wallets?walletId=${w.id}`, { method: "DELETE" }); mutateWallets(); refreshLists(); }}>Remove</Button>
-          </span>
-        ) : undefined} />
-      ) : data && (
-        <Empty title="This list is empty">{canEdit ? "Add a wallet, import a file, or tag one from the extension." : "Nothing has been added yet."}</Empty>
-      )}
+      <Suspense>
+        <WalletsView scope={{ kind: "list", id, name: list.name }} canEdit={canEdit} emptyHint={canEdit ? "Add wallets here, import a file from More, or pick this list while tagging in the extension." : "Nothing has been added yet."} />
+      </Suspense>
 
-      <Modal open={dialog === "add"} onClose={() => setDialog(null)} title={`Add to ${list.name}`}><QuickAddWallet listId={id} /></Modal>
-      {dialog === "import" && <ImportDialog listId={id} onClose={() => setDialog(null)} />}
-      <Modal open={dialog === "share"} onClose={() => setDialog(null)} title="Share list"><SharePanel list={list} onChange={() => { mutate(); refreshLists(); }} /></Modal>
+      {dialog === "import" && <ImportDialog scope={{ kind: "list", id, name: list.name }} onClose={() => setDialog(null)} />}
+      <Modal open={dialog === "share"} onClose={() => setDialog(null)} title={`Share “${list.name}”`}><SharePanel list={list} onChange={() => { mutate(); refreshLists(); }} /></Modal>
       <Modal open={dialog === "activity"} onClose={() => setDialog(null)} title="Activity">{dialog === "activity" && <Activity id={id} />}</Modal>
       <Modal open={dialog === "edit"} onClose={() => setDialog(null)} title="Rename list">
         <form className="space-y-3" onSubmit={async (e) => { e.preventDefault(); await api(`/api/lists/${id}`, { method: "PATCH", body: form }); mutate(); refreshLists(); setDialog(null); }}>
@@ -204,7 +160,6 @@ export default function ListPage({ params }: { params: Promise<{ id: string }> }
         <p className="mb-4 text-sm text-muted">The list goes away for everyone on it. Its wallets stay in your account and in your other lists.</p>
         <Button variant="danger" onClick={async () => { await api(`/api/lists/${id}`, { method: "DELETE" }); await refreshLists(); router.push("/dashboard"); }}>Delete list</Button>
       </Modal>
-      {moving && <MoveDialog wallet={moving} listId={id} onClose={() => setMoving(null)} />}
     </div>
   );
 }

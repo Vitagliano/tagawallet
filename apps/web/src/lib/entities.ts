@@ -1,3 +1,4 @@
+import { requireVerifiedEmail } from "./email-verification";
 import type { Document, ObjectId } from "mongodb";
 import { sanitizeUrl } from "@tagawallet/shared";
 import { ApiError } from "./api";
@@ -14,6 +15,7 @@ const PERSONAL_INFO = /[\w.+-]+@[\w-]+\.[\w.]+|(?:\+?\d[\s().-]?){10,}/;
 
 /** The publishing gate. Safe attribution rules live here so every route shares them. */
 export async function assertPublishable(entity: Document, owner: Document) {
+  requireVerifiedEmail(owner, "publishing a profile");
   if (owner.restrictedAt) throw new ApiError(403, "Publishing is disabled on this account after a moderation review.");
   if (entity.moderation?.removedAt) throw new ApiError(403, "This profile was removed by moderators and can't be republished.");
   if (entity.type === "individual" && entity.verification?.status !== "verified") {
@@ -54,7 +56,7 @@ export async function publicProfile(slug: string) {
       const w = wallets.find((x) => x._id.equals(l.walletId));
       if (!w) return [];
       return [{
-        address: w.address as string, chain: w.chain as string, relationship: l.relationship as string,
+        linkId: l._id.toString(), address: w.address as string, chain: w.chain as string, relationship: l.relationship as string,
         // Provenance: how the owner backed this attribution up.
         source: (l.evidence ?? []).some((e: Document) => e.verifiedAt) ? "Verified by signature" : "Self-claimed by profile owner",
       }];

@@ -1,5 +1,5 @@
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { MongoClient } from "mongodb";
 
 const BASE = "http://localhost:3200";
@@ -9,12 +9,29 @@ const A3 = "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB";
 const PASSWORD = "correct-horse-battery";
 let n = 0;
 
-async function account(email = `u${Date.now()}${n++}@example.test`) {
+let mongo: MongoClient | null = null;
+const db = async () => (mongo ??= await new MongoClient("mongodb://127.0.0.1:3202/tagawallet_e2e").connect()).db();
+/** Stands in for clicking the link in the confirmation email. */
+const markVerified = async (email: string) => { await (await db()).collection("users").updateOne({ email }, { $set: { emailVerifiedAt: new Date() } }); };
+test.afterAll(async () => { await mongo?.close(); });
+
+async function account(email = `u${Date.now()}${n++}@example.test`, { verified = true } = {}) {
   // Each account gets its own client address, so the signup rate limit doesn't trip across tests.
   const ctx = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": `10.0.${n % 250}.${Date.now() % 250}` } });
   const res = await ctx.post("/api/auth/register", { data: { email, password: PASSWORD, displayName: email.split("@")[0] } });
   expect(res.status(), await res.text()).toBe(201);
+  if (verified) await markVerified(email);
   return { ctx, email };
+}
+
+/** The moderator named in ADMIN_EMAILS, signed in with a confirmed address. */
+async function moderator() {
+  const mod = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": "10.2.0.1" } });
+  const modEmail = "moderator@example.test";
+  await mod.post("/api/auth/register", { data: { email: modEmail, password: PASSWORD, displayName: "Mod" } });
+  await markVerified(modEmail);
+  await json(mod.post("/api/auth/login", { data: { email: modEmail, password: PASSWORD } }));
+  return mod;
 }
 const json = async (p: Promise<any>, status = 200) => {
   const r = await p;
@@ -184,10 +201,7 @@ test("entities: many wallets, unlink keeps the wallet", async () => {
 
 test("public profiles: explicit publishing, provenance, reports, moderation, unpublish", async () => {
   const owner = await account(), viewer = await account();
-  const mod = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": "10.2.0.1" } });
-  const modEmail = "moderator@example.test";
-  await mod.post("/api/auth/register", { data: { email: modEmail, password: PASSWORD, displayName: "Mod" } });
-  await json(mod.post("/api/auth/login", { data: { email: modEmail, password: PASSWORD } }));
+  const mod = await moderator();
 
   const anon = await request.newContext({ baseURL: BASE });
   const name = `Proto ${Date.now()}`;
@@ -396,4 +410,302 @@ test("x handles: own links appear, others' private links and unproven public cla
   const { url } = await json(alice.ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer" } }));
   await json(bob.ctx.post(`/api/invites/${url.split("/invite/")[1]}`));
   expect((await handles(bob.ctx))[0]).toMatchObject({ handle: "walletowner", labels: [{ source: "shared" }] });
+});
+
+test("sign-in methods: the last way in can't be unlinked, and identities show in the session", async () => {
+  const { ctx } = await account();
+  const me = (await json(ctx.get("/api/auth/session"))).user;
+  expect(me.identities).toEqual([]);
+  expect(me.hasPassword).toBe(true);
+  expect((await ctx.delete("/api/account/identities", { data: { provider: "google" } })).status()).toBe(404);
+});
+
+test("import: column mapping, a dry-run preview, no list needed, and into a person or project", async () => {
+  const { ctx } = await account();
+  await addWallet(ctx, { address: A3, displayLabel: "Already mine" });
+  const csv = `Wallet,Network,Name,Memo\n${A1},base,Treasury,from a sheet\n${A1},base,Treasury twice,\n${A3},ethereum,Renamed?,\nnope,ethereum,Bad,`;
+  const mapping = { address: "Wallet", chain: "Network", label: "Name", notes: "Memo" };
+  const dry = await json(ctx.post("/api/wallets/import", { data: { format: "csv", content: csv, mapping, dryRun: true } }));
+  expect(dry).toMatchObject({ dryRun: true, created: 1, existing: 1, duplicates: 1, errorCount: 1, imported: 1, total: 4 });
+  expect(dry.preview.map((p: any) => p.outcome)).toEqual(["new", "duplicate", "existing"]);
+  expect((await json(ctx.get("/api/search?q=Treasury"))).wallets).toHaveLength(0);
+
+  const done = await json(ctx.post("/api/wallets/import", { data: { format: "csv", content: csv, mapping } }));
+  expect(done.imported).toBe(1);
+  const found = (await json(ctx.get("/api/search?q=Treasury"))).wallets;
+  expect(found[0]).toMatchObject({ displayLabel: "Treasury", chain: "base", notes: "from a sheet", source: "import" });
+  // An address you already have keeps its name.
+  expect((await json(ctx.get("/api/search?q=Already"))).wallets).toHaveLength(1);
+
+  const entity = await json(ctx.post("/api/entities", { data: { name: "Acme", type: "project" } }), 201);
+  const into = await json(ctx.post("/api/wallets/import", { data: { entityId: entity.id, format: "json", content: JSON.stringify([{ address: A2, name: "Acme hot" }, { address: A3 }]) } }));
+  expect(into).toMatchObject({ imported: 2, created: 1, existing: 1 });
+  const linked = await json(ctx.get(`/api/wallets?entity=${entity.id}`));
+  expect(linked.map((w: any) => w.address).sort()).toEqual([A2, A3].sort());
+
+  const other = await account();
+  expect((await other.ctx.post("/api/wallets/import", { data: { entityId: entity.id, format: "csv", content: `address\n${A1}` } })).status()).toBe(404);
+});
+
+test("invites: admins see and revoke pending invites, and a revoked link stops working", async () => {
+  const alice = await account(), bob = await account();
+  const list = await newList(alice.ctx, "Revocable");
+  const { url } = await json(alice.ctx.post(`/api/lists/${list.id}/members`, { data: { role: "editor" } }));
+  await json(alice.ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer", email: "someone@example.test" } }));
+  const pending = await json(alice.ctx.get(`/api/lists/${list.id}/invites`));
+  expect(pending).toHaveLength(2);
+  expect((await bob.ctx.get(`/api/lists/${list.id}/invites`)).status()).toBe(404);
+  const link = pending.find((i: any) => !i.email);
+  expect((await bob.ctx.delete(`/api/lists/${list.id}/invites/${link.id}`)).status()).toBe(404);
+  await json(alice.ctx.delete(`/api/lists/${list.id}/invites/${link.id}`));
+  expect(await json(alice.ctx.get(`/api/lists/${list.id}/invites`))).toHaveLength(1);
+  expect((await bob.ctx.post(`/api/invites/${url.split("/invite/")[1]}`)).status()).toBe(404);
+  expect((await alice.ctx.delete(`/api/lists/${list.id}/invites/${link.id}`)).status()).toBe(404);
+});
+
+test("bulk edits: labels, notes, moving between lists and linking, with access checked per wallet", async () => {
+  const alice = await account(), bob = await account();
+  const from = await newList(alice.ctx, "From"), to = await newList(alice.ctx, "To");
+  const w1 = await addWallet(alice.ctx, { address: A1, displayLabel: "One", tags: ["keep", "drop"], listId: from.id });
+  const w2 = await addWallet(alice.ctx, { address: A2, displayLabel: "Two", tags: ["drop"], notes: "old", listId: from.id });
+  const ids = [w1.id, w2.id];
+  const bulk = (c: APIRequestContext, data: object) => json(c.post("/api/wallets/bulk", { data: { ids, ...data } }));
+
+  expect(await bulk(alice.ctx, { op: "removeTag", tag: "drop" })).toMatchObject({ changed: 2, failed: [] });
+  expect((await json(alice.ctx.get(`/api/wallets/${w1.id}`))).tags).toEqual(["keep"]);
+  await bulk(alice.ctx, { op: "addTag", tag: "Whale" });
+  await bulk(alice.ctx, { op: "setStatus", status: "watchlist" });
+  await bulk(alice.ctx, { op: "setNotes", mode: "append", text: "seen on X" });
+  const two = await json(alice.ctx.get(`/api/wallets/${w2.id}`));
+  expect(two).toMatchObject({ tags: ["whale"], status: "watchlist", notes: "old\nseen on X" });
+
+  await bulk(alice.ctx, { op: "move", fromListId: from.id, toListId: to.id });
+  expect(await json(alice.ctx.get(`/api/wallets?list=${from.id}`))).toHaveLength(0);
+  expect(await json(alice.ctx.get(`/api/wallets?list=${to.id}`))).toHaveLength(2);
+
+  const entity = await json(alice.ctx.post("/api/entities", { data: { name: "Bulk Co" } }), 201);
+  await bulk(alice.ctx, { op: "linkEntity", entityId: entity.id });
+  expect(await json(alice.ctx.get(`/api/wallets?entity=${entity.id}`))).toHaveLength(2);
+
+  // Someone without access changes nothing, and is told so per wallet.
+  const r = await bulk(bob.ctx, { op: "addTag", tag: "hijack" });
+  expect(r).toMatchObject({ changed: 0 });
+  expect(r.failed).toHaveLength(2);
+  expect((await json(alice.ctx.get(`/api/wallets/${w1.id}`))).tags).not.toContain("hijack");
+});
+
+test("wallets: the chain or address can be changed in place, and a collision says which wallet", async () => {
+  const { ctx } = await account();
+  const list = await newList(ctx, "Keep me");
+  const w = await addWallet(ctx, { address: A1, displayLabel: "Movable", listId: list.id });
+  const other = await addWallet(ctx, { address: A2, displayLabel: "Taken", chain: "base" });
+  const moved = await json(ctx.patch(`/api/wallets/${w.id}`, { data: { chain: "base" } }));
+  expect(moved).toMatchObject({ chain: "base", displayLabel: "Movable" });
+  expect(moved.lists.map((l: any) => l.name)).toEqual(["Keep me"]);
+  const clash = await ctx.patch(`/api/wallets/${w.id}`, { data: { address: A2 } });
+  expect(clash.status()).toBe(409);
+  expect(await clash.json()).toMatchObject({ walletId: other.id });
+  expect((await ctx.patch(`/api/wallets/${w.id}`, { data: { chain: "solana" } })).status()).toBe(422);
+  await json(ctx.patch(`/api/wallets/${w.id}`, { data: { address: A3 } }));
+  expect((await json(ctx.get(`/api/wallets/${w.id}`))).address).toBe(A3);
+});
+
+test("exports: the filtered wallet view, one person or project, and every linked entity", async () => {
+  const { ctx } = await account();
+  const w = await addWallet(ctx, { address: A1, displayLabel: "Linked twice", tags: ["vip"] });
+  await addWallet(ctx, { address: A2, displayLabel: "Plain" });
+  for (const name of ["First Co", "Second Co"]) {
+    const e = await json(ctx.post("/api/entities", { data: { name } }), 201);
+    await json(ctx.post(`/api/entities/${e.id}/wallets`, { data: { walletId: w.id } }));
+  }
+  const csv = await (await ctx.get("/api/wallets/export?format=csv&tag=vip")).text();
+  expect(csv.split("\n")[0]).toBe("address,chain,label,status,tags,notes,entities");
+  expect(csv).toContain("Linked twice");
+  expect(csv).not.toContain("Plain");
+  expect(csv).toMatch(/First Co; Second Co|Second Co; First Co/);
+  const entities = await json(ctx.get("/api/entities"));
+  const first = entities.find((e: any) => e.name === "First Co");
+  const one = await json(ctx.get(`/api/entities/${first.id}/export?format=json`));
+  expect(one.entity.name).toBe("First Co");
+  expect(one.wallets.map((r: any) => r.label)).toEqual(["Linked twice"]);
+});
+
+test("extension: a tag can be removed, and the handle index answers 304 when unchanged", async () => {
+  const { ctx } = await account();
+  await json(ctx.post("/api/extension/tags", { data: { address: A1, chain: "ethereum", displayLabel: "Short lived" } }));
+  expect(await resolve(ctx, A1)).toHaveLength(1);
+  expect(await json(ctx.delete("/api/extension/tags", { data: { address: A1, chain: "ethereum" } }))).toMatchObject({ removed: true });
+  expect(await resolve(ctx, A1)).toHaveLength(0);
+  expect(await json(ctx.delete("/api/extension/tags", { data: { address: A1, chain: "ethereum" } }))).toMatchObject({ removed: false });
+
+  const first = await ctx.get("/api/extension/handles");
+  const etag = first.headers()["etag"];
+  expect(etag).toBeTruthy();
+  expect((await ctx.get("/api/extension/handles", { headers: { "If-None-Match": etag! } })).status()).toBe(304);
+});
+
+test("account: connected browsers are listed and can all be disconnected", async () => {
+  const { ctx } = await account();
+  const { token } = await json(ctx.post("/api/extension/connect"));
+  expect((await json(ctx.get("/api/account/extension"))).browsers).toHaveLength(1);
+  expect(await json(ctx.delete("/api/account/extension"))).toMatchObject({ disconnected: 1 });
+  const anon = await request.newContext({ baseURL: BASE });
+  expect((await anon.get("/api/extension/bootstrap", { headers: { Authorization: `Bearer ${token}` } })).status()).toBe(401);
+});
+
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function base58(bytes: Uint8Array) {
+  let n = BigInt("0x" + (Buffer.from(bytes).toString("hex") || "0")), out = "";
+  while (n > 0n) { out = B58[Number(n % 58n)] + out; n /= 58n; }
+  for (const b of bytes) { if (b !== 0) break; out = "1" + out; }
+  return out;
+}
+
+test("api keys: read-only v1 works with a key, never with a session, and a revoked key stops at once", async () => {
+  const { ctx } = await account();
+  const list = await newList(ctx, "Via API");
+  await addWallet(ctx, { address: A1, displayLabel: "API wallet", tags: ["bot"], listId: list.id });
+  const created = await json(ctx.post("/api/account/api-keys", { data: { name: "notebook" } }), 201);
+  expect(created.key).toMatch(/^taw_/);
+  expect(JSON.stringify(await json(ctx.get("/api/account/api-keys")))).not.toContain(created.key);
+
+  const bot = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { Authorization: `Bearer ${created.key}` } });
+  const wallets = await json(bot.get("/api/v1/wallets?tag=bot"));
+  expect(wallets.wallets[0]).toMatchObject({ address: A1, label: "API wallet", tags: ["bot"], lists: [{ id: list.id, name: "Via API" }] });
+  expect((await json(bot.get("/api/v1/lists"))).lists[0]).toMatchObject({ name: "Via API", walletCount: 1, role: "owner" });
+  expect(await json(bot.get("/api/v1/entities"))).toMatchObject({ entities: [] });
+  const looked = await json(bot.get(`/api/v1/lookup?addresses=${A1},${A2}`));
+  expect(looked.results[0].labels[0]).toMatchObject({ label: "API wallet", source: "private" });
+  expect(looked.results[1].labels).toEqual([]);
+  expect((await bot.get("/api/v1/lookup?addresses=nonsense")).status()).toBe(422);
+
+  // Read-only, and the two kinds of credential never cross over.
+  expect((await bot.post("/api/v1/wallets", { data: {} })).status()).toBe(405);
+  expect((await bot.get("/api/wallets")).status()).toBe(401);
+  expect((await bot.get("/api/account/api-keys")).status()).toBe(401);
+  expect((await ctx.get("/api/v1/wallets")).status()).toBe(401);
+
+  await json(ctx.delete(`/api/account/api-keys/${created.id}`));
+  expect((await bot.get("/api/v1/wallets")).status()).toBe(401);
+});
+
+test("solana sign-in: an Ed25519 signature signs in, a wrong one is refused, replay too", async () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const address = base58(Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url"));
+  const ctx = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": "10.9.9.9" } });
+  const bad = await json(ctx.get("/api/auth/wallet"));
+  const wrong = sign(null, Buffer.from("something else"), privateKey).toString("base64");
+  expect((await ctx.post("/api/auth/wallet", { data: { address, signature: wrong, nonce: bad.nonce, chain: "solana" } })).status()).toBe(401);
+
+  const { nonce, message } = await json(ctx.get("/api/auth/wallet"));
+  const signature = sign(null, Buffer.from(message), privateKey).toString("base64");
+  await json(ctx.post("/api/auth/wallet", { data: { address, signature, nonce, chain: "solana" } }));
+  const session = await json(ctx.get("/api/auth/session"));
+  expect(session.user.identities).toContainEqual({ provider: "wallet", address });
+  expect((await ctx.post("/api/auth/wallet", { data: { address, signature, nonce, chain: "solana" } })).status()).toBe(400);
+});
+
+test("ens: a name resolved on-chain carries the labels of the wallet behind it, and its address", async () => {
+  const { ctx } = await account();
+  await addWallet(ctx, { address: A2, displayLabel: "Behind the name" });
+  const name = `tagtest${Date.now()}.eth`;
+  // No RPC in tests, so plant the cached answer the resolver would have stored.
+  const client = await new MongoClient("mongodb://127.0.0.1:3202/tagawallet_e2e").connect();
+  await client.db().collection("ens_cache").insertOne({ _id: name as never, address: A2, expiresAt: new Date(Date.now() + 60_000) });
+  await client.close();
+  const r = await json(ctx.post("/api/extension/resolve", { data: { addresses: [{ normalized: name, kind: "ens" }] } }));
+  expect(r.results[0]).toMatchObject({ normalized: name, address: A2 });
+  expect(r.results[0].labels[0]).toMatchObject({ label: "Behind the name", source: "private" });
+});
+
+test("extension sites: the built-in list covers Bitcoin, Solana and Blockscout explorers", async () => {
+  const anon = await request.newContext({ baseURL: BASE });
+  const { sites } = await json(anon.get("/api/extension/sites"));
+  for (const s of ["mempool.space", "solana.fm", "blockscout.com", "opensea.io"]) expect(sites).toContain(s);
+});
+
+test("email verification: needed to publish and invite by email, confirmed by a one-time link, and required for admin", async () => {
+  const { ctx, email } = await account(undefined, { verified: false });
+  expect((await json(ctx.get("/api/auth/session"))).user.emailVerified).toBe(false);
+  const e = await json(ctx.post("/api/entities", { data: { name: `Unverified ${Date.now()}`, type: "project" } }), 201);
+  const blocked = await ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } });
+  expect(blocked.status()).toBe(403);
+  expect(await blocked.json()).toMatchObject({ needsVerification: true });
+  const list = await newList(ctx, "Invites");
+  expect((await ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer", email: "friend@example.test" } })).status()).toBe(403);
+  await json(ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer" } })); // A link sends no email, so it's fine.
+
+  // The real token only exists in the email, so plant one the way the server stores it.
+  const users = (await db()).collection("users");
+  const user = await users.findOne({ email });
+  const token = `verify-${Date.now()}-known-token`;
+  await (await db()).collection("tokens").insertOne({ kind: "email_verify", tokenHash: createHash("sha256").update(token).digest("hex"), userId: user!._id, email, expiresAt: new Date(Date.now() + 60_000) });
+  const anon = await request.newContext({ baseURL: BASE });
+  await json(anon.post("/api/auth/verify-email", { data: { token } }));
+  expect((await anon.post("/api/auth/verify-email", { data: { token } })).status()).toBe(400);
+  expect((await json(ctx.get("/api/auth/session"))).user.emailVerified).toBe(true);
+  await json(ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } }));
+  expect((await json(ctx.post("/api/account/verify-email"))).alreadyVerified).toBe(true);
+
+  // Typing an admin's address at signup grants nothing until it's confirmed.
+  await users.deleteOne({ email: "moderator@example.test" });
+  const squatter = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": "10.3.0.1" } });
+  await json(squatter.post("/api/auth/register", { data: { email: "moderator@example.test", password: PASSWORD, displayName: "Not a mod" } }), 201);
+  expect((await squatter.get("/api/admin/reports")).status()).toBe(403);
+  await users.deleteOne({ email: "moderator@example.test" });
+});
+
+test("wallet reports: one public wallet claim can be reported and removed, and owners restricted then reinstated", async () => {
+  const owner = await account(), viewer = await account();
+  const mod = await moderator();
+  const anon = await request.newContext({ baseURL: BASE });
+  const name = `Claims ${Date.now()}`;
+  const e = await json(owner.ctx.post("/api/entities", { data: { name, type: "project" } }), 201);
+  const pub = await addWallet(owner.ctx, { address: A1, entityId: e.id });
+  const priv = await addWallet(owner.ctx, { address: A2, entityId: e.id });
+  const { slug } = await json(owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } }));
+  await json(owner.ctx.post(`/api/entities/${e.id}/wallets`, { data: { walletId: pub.id, visibility: "public", relationship: "treasury" } }));
+
+  const profile = await json(anon.get(`/api/public/profiles/${slug}`));
+  const linkId = profile.wallets[0].linkId;
+  expect(linkId).toBeTruthy();
+  expect((await resolve(viewer.ctx, A1))[0]).toMatchObject({ source: "self_claimed", linkId });
+
+  // Only public claims can be reported, so a report reveals nothing private.
+  const privateLink = (await (await db()).collection("wallet_entity_links").findOne({ walletId: new (await import("mongodb")).ObjectId(priv.id) }))!._id.toString();
+  expect((await viewer.ctx.post("/api/reports", { data: { targetType: "wallet_entity_link", targetId: privateLink, reason: "incorrect" } })).status()).toBe(404);
+  await json(viewer.ctx.post("/api/reports", { data: { targetType: "wallet_entity_link", targetId: linkId, reason: "incorrect", details: "not their treasury" } }));
+
+  const queue = await json(mod.get("/api/admin/reports"));
+  const report = queue.find((r: any) => r.entity?.name === name);
+  expect(report).toMatchObject({ targetType: "wallet_entity_link", link: { address: A1, relationship: "treasury" } });
+  await json(mod.post(`/api/admin/reports/${report.id}`, { data: { action: "remove", note: "No evidence" } }));
+  expect(await resolve(viewer.ctx, A1)).toEqual([]);
+  expect((await json(anon.get(`/api/public/profiles/${slug}`))).wallets).toHaveLength(0); // The profile itself stays up.
+
+  await json(viewer.ctx.post("/api/reports", { data: { targetType: "entity", targetId: e.id, reason: "spam" } }));
+  const second = (await json(mod.get("/api/admin/reports"))).find((r: any) => r.entity?.name === name);
+  await json(mod.post(`/api/admin/reports/${second.id}`, { data: { action: "restrict_owner" } }));
+  // Restricting keeps the report open for review, so it moves to the reviewing queue.
+  expect((await json(mod.get("/api/admin/reports?status=reviewing"))).find((r: any) => r.id === second.id).ownerRestricted).toBe(true);
+  expect((await owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } })).status()).toBe(403);
+  const restricted = await json(mod.get("/api/admin/restricted"));
+  const me = restricted.find((u: any) => u.email === owner.email);
+  expect(me).toBeTruthy();
+  expect((await viewer.ctx.delete(`/api/admin/restricted/${me.id}`)).status()).toBe(403);
+  await json(mod.delete(`/api/admin/restricted/${me.id}`));
+  await json(owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } }));
+});
+
+test("admin sites: moderators edit and reset the extension's site list, nobody else can", async () => {
+  const mod = await moderator(), { ctx } = await account();
+  expect((await ctx.put("/api/extension/sites", { data: { sites: ["evil.example"] } })).status()).toBe(403);
+  expect((await mod.put("/api/extension/sites", { data: { sites: ["Not A Host"] } })).status()).toBe(422);
+  await json(mod.put("/api/extension/sites", { data: { sites: ["etherscan.io", "Etherscan.io", "explorer.example.org"] } }));
+  const anon = await request.newContext({ baseURL: BASE });
+  expect(await json(anon.get("/api/extension/sites"))).toMatchObject({ sites: ["etherscan.io", "explorer.example.org"], custom: true });
+  await json(mod.delete("/api/extension/sites"));
+  const reset = await json(anon.get("/api/extension/sites"));
+  expect(reset.custom).toBe(false);
+  expect(reset.sites).toContain("mempool.space");
 });
