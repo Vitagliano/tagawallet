@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError, type ZodType } from "zod";
-import { SESSION_COOKIE, userFromToken, type User } from "./auth";
+import { SESSION_COOKIE, sha256, userFromToken, type User } from "./auth";
 import { getDb } from "./db";
 
 export class ApiError extends Error {
@@ -46,7 +46,8 @@ function corsHeaders(req: NextRequest): Record<string, string> {
   if (!origin?.startsWith("chrome-extension://")) return {};
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Allow-Headers": "authorization, content-type, if-none-match",
+    "Access-Control-Expose-Headers": "etag",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "Access-Control-Max-Age": "600",
     Vary: "Origin",
@@ -124,4 +125,41 @@ export function ser<T = any>(value: unknown): T {
     return out as T;
   }
   return value as T;
+}
+
+// ---- Personal API keys: read-only, for /api/v1 only. ----
+
+export const API_KEY_PREFIX = "taw_";
+
+/** The key's owner, or null. Keys never sign anyone into the app, and sessions never work on /api/v1. */
+export async function userFromApiKey(key: string | null): Promise<{ user: User; keyId: string } | null> {
+  if (!key?.startsWith(API_KEY_PREFIX)) return null;
+  const db = await getDb();
+  const doc = await db.collection("api_keys").findOne({ tokenHash: sha256(key), revokedAt: null });
+  if (!doc) return null;
+  const user = await db.collection<User>("users").findOne({ _id: doc.userId, deletedAt: null });
+  if (!user) return null;
+  // Written at most once a minute, so a busy key doesn't turn every read into a write.
+  if (!doc.lastUsedAt || Date.now() - doc.lastUsedAt.getTime() > 60_000) {
+    await db.collection("api_keys").updateOne({ _id: doc._id }, { $set: { lastUsedAt: new Date() } });
+  }
+  return { user, keyId: doc._id.toString() };
+}
+
+/** A read-only /api/v1 handler. GET only, authenticated by an API key, rate-limited per key. */
+export function apiKeyRoute<P = Record<string, string>>(fn: (c: { req: NextRequest; params: P; user: User }) => Promise<unknown>, rate = { name: "v1", limit: 300, windowSec: 60 }) {
+  return async (req: NextRequest, arg?: RouteArg<P>) => {
+    const headers = { "Cache-Control": "no-store" };
+    try {
+      if (req.method !== "GET") throw new ApiError(405, "The API is read-only. Only GET is supported.");
+      const auth = await userFromApiKey(bearer(req));
+      if (!auth) throw new ApiError(401, "Send a TagAWallet API key as a Bearer token. Create one in Settings › API keys.");
+      await rateLimit({ ...rate, name: `${rate.name}` }, `key:${auth.keyId}`);
+      const params = (arg ? await arg.params : {}) as P;
+      const result = await fn({ req, params, user: auth.user });
+      return NextResponse.json(result, { headers });
+    } catch (err) {
+      return respondError(err, headers);
+    }
+  };
 }

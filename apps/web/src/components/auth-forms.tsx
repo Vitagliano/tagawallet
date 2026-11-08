@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema, registerSchema, passwordSchema, emailSchema } from "@tagawallet/shared";
+import { signWithSolana, solanaProvider } from "@/lib/solana-client";
 import { z } from "zod";
 import { api, ClientError } from "@/lib/client";
 import { Button, ErrorNote, Field, Input, Logo } from "./ui";
@@ -27,7 +28,17 @@ const safeNext = (next: string | null) => (next && /^\/(?![/\\])/.test(next) ? n
 function ExternalSignIn({ next }: { next: string }) {
   const [providers, setProviders] = useState<{ google: boolean; x: boolean } | null>(null);
   const [error, setError] = useState("");
-  useEffect(() => { api("/api/auth/providers").then(setProviders); }, []);
+  const [hasSolana, setHasSolana] = useState(false);
+  useEffect(() => { api("/api/auth/providers").then(setProviders); setHasSolana(!!solanaProvider()); }, []);
+  async function solana() {
+    setError("");
+    try {
+      const { message, nonce } = await api("/api/auth/wallet");
+      const { address, signature } = await signWithSolana(message);
+      await api("/api/auth/wallet", { body: { address, signature, nonce, chain: "solana" } });
+      window.location.assign(next);
+    } catch (e) { setError((e as Error).message); }
+  }
   async function wallet() {
     setError("");
     try {
@@ -46,6 +57,7 @@ function ExternalSignIn({ next }: { next: string }) {
       {providers?.google && <a className={a} href="/api/auth/oauth/google/start">Continue with Google</a>}
       {providers?.x && <a className={a} href="/api/auth/oauth/x/start">Continue with X</a>}
       <Button className="w-full" onClick={wallet}>Sign in with a wallet signature</Button>
+      {hasSolana && <Button className="w-full" onClick={solana}>Sign in with a Solana wallet</Button>}
       <p className="text-xs text-muted">A signature proves control of an address. We never ask for a seed phrase, private key or transaction.</p>
       <ErrorNote>{error}</ErrorNote>
     </div>

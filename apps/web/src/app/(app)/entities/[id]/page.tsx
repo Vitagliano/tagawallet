@@ -1,31 +1,17 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { Suspense, use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import useSWR from "swr";
-import { CHAIN_IDS, CHAINS, ENTITY_TYPES, RELATIONSHIPS, chainFamily, linkHref, LINK_TYPE_LABELS, type ChainId, type LinkType } from "@tagawallet/shared";
+import useSWR, { useSWRConfig } from "swr";
+import { CHAIN_IDS, CHAINS, ENTITY_TYPES, RELATIONSHIPS, chainFamily, inferFamily, linkHref, LINK_TYPE_LABELS, type ChainId, type LinkType } from "@tagawallet/shared";
 import { api, fetcher } from "@/lib/client";
-import { Address, Button, ChainName, Empty, ErrorNote, Field, Input, Modal, Pill, Select, Textarea, VerificationPill, VisibilityPill } from "@/components/ui";
-import { LinkEditor, parseTags, type LinkRow } from "@/components/link-editor";
-
-function AddWallet({ entityId, onDone }: { entityId: string; onDone: () => void }) {
-  const [address, setAddress] = useState(""), [chain, setChain] = useState("ethereum"), [error, setError] = useState("");
-  return (
-    <form className="flex flex-wrap gap-2" onSubmit={async (e) => {
-      e.preventDefault(); setError("");
-      try { await api("/api/wallets", { body: { address, chain, entityId } }); setAddress(""); onDone(); }
-      catch (err) { setError((err as Error).message); }
-    }}>
-      <Input className="addr min-w-0 flex-1 basis-64" aria-label="Wallet address" placeholder="Add a wallet by address" value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false} />
-      <Select aria-label="Chain" className="w-auto" value={chain} onChange={(e) => setChain(e.target.value)}>
-        {CHAIN_IDS.map((c) => <option key={c} value={c}>{CHAINS[c].name}</option>)}
-      </Select>
-      <Button type="submit" disabled={!address}>Link wallet</Button>
-      {error && <div className="basis-full"><ErrorNote>{error}</ErrorNote></div>}
-    </form>
-  );
-}
+import { Address, Button, ChainName, Empty, ErrorNote, Field, Input, Modal, Pill, Select, VerificationPill } from "@/components/ui";
+import { LinkEditor, type LinkRow } from "@/components/link-editor";
+import { AutoField, LabelChips, Menu, menuItem, TagInput, useToast } from "@/components/kit";
+import { signWithSolana } from "@/lib/solana-client";
+import { WalletsView } from "@/components/wallets-view";
+import { kindLabel, type Kind } from "@/components/collections";
 
 const METHODS = [
   { id: "x_post", label: "X post", target: "The X account on this profile, e.g. https://x.com/uniswap" },
@@ -33,6 +19,7 @@ const METHODS = [
   { id: "meta", label: "Website meta tag", target: "The website on this profile, e.g. https://uniswap.org" },
   { id: "ens", label: "ENS text record", target: "The ENS name on this profile, e.g. uniswap.eth" },
 ];
+
 
 function Verify({ entity, onDone }: { entity: any; onDone: () => void }) {
   const [method, setMethod] = useState("x_post"), [target, setTarget] = useState(""), [pending, setPending] = useState<any>(null);
@@ -76,7 +63,14 @@ function Verify({ entity, onDone }: { entity: any; onDone: () => void }) {
 }
 
 /** Asks an injected wallet to sign one message. We never request accounts beyond this or send transactions. */
-async function signClaim(entityId: string, walletId: string, address: string) {
+async function signClaim(entityId: string, walletId: string, address: string, chain: string) {
+  if (chain === "solana") {
+    const v = await api(`/api/entities/${entityId}/verify`, { body: { method: "signature", target: walletId } });
+    const signed = await signWithSolana(v.message);
+    if (signed.address !== address) throw new Error(`Your Solana wallet is connected as a different address. Switch to ${address.slice(0, 6)}… and try again.`);
+    await api(`/api/entities/${entityId}/verify`, { body: { verificationId: v.id, proof: signed.signature } });
+    return;
+  }
   const eth = (window as any).ethereum;
   if (!eth) throw new Error("No browser wallet found. Install one to sign, or use another method.");
   const v = await api(`/api/entities/${entityId}/verify`, { body: { method: "signature", target: walletId } });
@@ -104,123 +98,194 @@ function Publish({ entity, onDone }: { entity: any; onDone: () => void }) {
   );
 }
 
+const label = (s: string) => s === "dao" ? "DAO" : (s[0]!.toUpperCase() + s.slice(1)).replace("_", " ");
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
+
 export default function EntityPage({ params }: { params: Promise<{ id: string }> }) {
+  return <Suspense><EntityInner params={params} /></Suspense>;
+}
+
+/** A contact card: who they are, the wallets that are theirs, and where to find them. Publishing is a side door. */
+function EntityInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { mutate: mutateAll } = useSWRConfig();
+  const { undoable } = useToast();
   const { data: e, error, mutate } = useSWR(`/api/entities/${id}`, fetcher);
-  const [f, setF] = useState({ name: "", type: "other", description: "", avatarUrl: "", tags: "" });
-  const [links, setLinks] = useState<LinkRow[]>([]);
-  const [problem, setProblem] = useState(""), [saved, setSaved] = useState(false), [dialog, setDialog] = useState<null | "verify" | "publish">(null), [sigError, setSigError] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  useEffect(() => { if (typeof location !== "undefined" && location.hash === "#public") setPublishing(true); }, []);
 
-  useEffect(() => {
-    if (!e) return;
-    setF({ name: e.name, type: e.type, description: e.description ?? "", avatarUrl: e.avatarUrl ?? "", tags: (e.tags ?? []).join(", ") });
-    setLinks(e.links ?? []);
-  }, [e?.id]); // eslint-disable-line
-
-  if (error) return <Empty title="Entity not found">It may have been deleted, or you may not have access.</Empty>;
+  if (error) return <Empty title="Not found">It may have been deleted, or you may not have access.</Empty>;
   if (!e) return <p className="text-sm text-muted">Loading…</p>;
-
-  async function save(ev: React.FormEvent) {
-    ev.preventDefault(); setProblem(""); setSaved(false);
-    try {
-      await api(`/api/entities/${id}`, { method: "PATCH", body: { ...f, tags: parseTags(f.tags), links: links.filter((l) => l.url.trim()) } });
-      setSaved(true); mutate();
-    } catch (err) { setProblem((err as Error).message); }
-  }
-  const setLink = async (w: any, patch: object) => {
-    setSigError("");
-    try { await api(`/api/entities/${id}/wallets`, { body: { walletId: w.id, relationship: w.relationship, visibility: w.linkVisibility, ...patch } }); mutate(); }
-    catch (err) { setSigError((err as Error).message); }
-  };
+  const isPublic = e.visibility === "public";
+  const kind: Kind = e.type === "individual" ? "person" : "project";
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">{e.name}</h1>
-            <VisibilityPill visibility={e.visibility} /><VerificationPill status={e.verification?.status} />
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-4">
+          {e.avatarUrl
+            ? <img src={e.avatarUrl} alt="" className="size-14 shrink-0 rounded-full object-cover" />
+            : <span aria-hidden className="grid size-14 shrink-0 place-items-center rounded-full bg-wash text-lg font-semibold text-muted">{initials(e.name)}</span>}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-2xl font-semibold tracking-tight">{e.name}</h1>
+              {isPublic && <><Pill tone="accent">Public</Pill><VerificationPill status={e.verification?.status} /></>}
+            </div>
+            <p className="text-sm text-muted">{kindLabel(kind)}{kind === "project" && !["project", "other"].includes(e.type) ? ` · ${label(e.type)}` : ""} · {e.wallets.length} wallet{e.wallets.length === 1 ? "" : "s"}{!isPublic ? " · Private to you" : ""}</p>
+            {e.moderation?.removedAt && <p className="mt-1 text-sm text-bad">Moderators removed this profile from public view.</p>}
           </div>
-          <p className="mt-1 text-sm capitalize text-muted">{e.type}</p>
-          {e.moderation?.removedAt && <p className="mt-2 text-sm text-bad">Moderators removed this profile from public view.</p>}
         </div>
         {e.own && (
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => setDialog("verify")}>Verify</Button>
-            {e.visibility === "public" ? (
-              <>
-                <Link href={`/p/${e.slug}`} className="inline-flex min-h-9 items-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash">View profile</Link>
-                <Button onClick={async () => { await api(`/api/entities/${id}/publish`, { body: { publish: false } }); mutate(); }}>Make private</Button>
-              </>
-            ) : <Button variant="primary" onClick={() => setDialog("publish")}>Publish…</Button>}
+          <div className="flex items-center gap-2">
+            {isPublic && <Link href={`/p/${e.slug}`} className="inline-flex min-h-9 items-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash">View profile ↗</Link>}
+            <Button onClick={() => setPublishing(true)}>{isPublic ? "Public profile" : "Publish…"}</Button>
+            <Menu label="⋯" ariaLabel="More actions">
+              {(close) => (
+                <>
+                <a className={menuItem} href={`/api/entities/${id}/export?format=csv`} onClick={close}>Export CSV</a>
+                <a className={menuItem} href={`/api/entities/${id}/export?format=json`} onClick={close}>Export JSON</a>
+                <button className={`${menuItem} text-bad`} onClick={() => {
+                  close();
+                  void mutateAll("/api/entities", (d: any[] | undefined) => d?.filter((x) => x.id !== id), { revalidate: false });
+                  router.push("/entities");
+                  undoable(`Deleted “${e.name}”`, async () => { await api(`/api/entities/${id}`, { method: "DELETE" }); await mutateAll("/api/entities"); }, () => void mutateAll("/api/entities"));
+                }}>Delete {e.name}</button>
+                </>
+              )}
+            </Menu>
           </div>
         )}
       </header>
 
-      <section className="space-y-3">
-        <h2 className="font-semibold">Wallets <span className="font-normal text-muted">{e.wallets.length}</span></h2>
-        {e.wallets.length > 0 && (
-          <ul className="divide-y divide-line rounded-xl border border-line bg-card">
-            {e.wallets.map((w: any) => (
-              <li key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-                <div className="min-w-0 flex-1 basis-52">
-                  <Link href={`/wallets/${w.id}`} className="block truncate font-medium hover:underline">{w.displayLabel || <Address value={w.address} />}</Link>
-                  <div className="text-xs text-muted"><Address value={w.address} /> · <ChainName chain={w.chain} /></div>
-                </div>
-                {w.evidence?.some((x: any) => x.verifiedAt) && <Pill tone="good">✓ Signed</Pill>}
-                {e.own && (
-                  <span className="flex flex-wrap items-center gap-2">
-                    <Select aria-label="Relationship" className="w-auto" value={w.relationship} onChange={(ev) => setLink(w, { relationship: ev.target.value })}>
-                      {RELATIONSHIPS.map((r) => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
-                    </Select>
-                    <Select aria-label="Link visibility" className="w-auto" value={w.linkVisibility} onChange={(ev) => setLink(w, { visibility: ev.target.value })}>
-                      <option value="private">Private link</option><option value="shared">Shared link</option><option value="public">Public link</option>
-                    </Select>
-                    {chainFamily(w.chain as ChainId) === "evm" && !w.evidence?.some((x: any) => x.verifiedAt) && (
-                      <Button variant="ghost" onClick={async () => { setSigError(""); try { await signClaim(id, w.id, w.address); mutate(); } catch (err) { setSigError((err as Error).message); } }}>Prove with signature</Button>
-                    )}
-                    <Button variant="ghost" onClick={async () => { await api(`/api/entities/${id}/wallets/${w.id}`, { method: "DELETE" }); mutate(); }}>Unlink</Button>
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        <ErrorNote>{sigError}</ErrorNote>
-        {e.own && <AddWallet entityId={id} onDone={() => mutate()} />}
-      </section>
-
       {e.own ? (
-        <form onSubmit={save} className="space-y-4 rounded-xl border border-line bg-card p-4">
-          <h2 className="font-semibold">Details</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Name"><Input required value={f.name} onChange={(ev) => setF({ ...f, name: ev.target.value })} /></Field>
-            <Field label="Type"><Select value={f.type} onChange={(ev) => setF({ ...f, type: ev.target.value })}>{ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</Select></Field>
-          </div>
-          <Field label="Description"><Textarea rows={3} value={f.description} onChange={(ev) => setF({ ...f, description: ev.target.value })} /></Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Logo URL" hint="An https image link"><Input value={f.avatarUrl} onChange={(ev) => setF({ ...f, avatarUrl: ev.target.value })} /></Field>
-            <Field label="Tags" hint="Separate with commas"><Input value={f.tags} onChange={(ev) => setF({ ...f, tags: ev.target.value })} /></Field>
-          </div>
-          <div className="space-y-1.5"><span className="text-sm font-medium">Links</span><LinkEditor value={links} onChange={setLinks} /></div>
-          <ErrorNote>{problem}</ErrorNote>
-          <div className="flex items-center gap-3">
-            <Button type="submit" variant="primary">Save changes</Button>
-            {saved && <span role="status" className="text-sm text-good">Saved</span>}
-            <Button variant="danger" className="ml-auto" onClick={async () => {
-              if (confirm(`Delete “${e.name}”? Its wallets stay in your account.`)) { await api(`/api/entities/${id}`, { method: "DELETE" }); router.push("/entities"); }
-            }}>Delete entity</Button>
-          </div>
-        </form>
+        <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
+          <WalletsView scope={{ kind, id, name: e.name }} emptyHint={`Add the wallets you know are ${e.name}'s. You can also add a wallet to ${e.name} from the wallet itself.`} />
+          <AboutSection e={e} id={id} mutate={mutate} />
+        </div>
       ) : (
-        <section className="rounded-xl border border-line bg-card p-4 text-sm">
-          {e.description && <p className="mb-2">{e.description}</p>}
+        <section className="space-y-3 rounded-2xl bg-card p-4 text-sm">
+          {e.description && <p>{e.description}</p>}
           <ul className="space-y-1">{e.links?.map((l: any) => <li key={l.url}><a className="underline" rel="noreferrer noopener nofollow" target="_blank" href={linkHref(l.type, l.url)}>{l.label || LINK_TYPE_LABELS[l.type as LinkType]}</a></li>)}</ul>
+          <ul className="divide-y divide-line">{e.wallets.map((w: any) => <li key={w.id} className="py-2"><Address value={w.address} /> · <ChainName chain={w.chain} /></li>)}</ul>
         </section>
       )}
-      <Modal open={dialog === "verify"} onClose={() => setDialog(null)} title="Verify this entity">{dialog === "verify" && <Verify entity={e} onDone={() => mutate()} />}</Modal>
-      <Modal open={dialog === "publish"} onClose={() => setDialog(null)} title="Publish a public profile">{dialog === "publish" && <Publish entity={e} onDone={() => { setDialog(null); mutate(); }} />}</Modal>
+
+      <Modal open={publishing} onClose={() => setPublishing(false)} title="Public profile">
+        {publishing && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted">Optional. A public profile lets anyone using TagAWallet recognize these wallets. Your notes and private labels never appear.</p>
+            <PublicTab e={e} id={id} mutate={mutate} />
+          </div>
+        )}
+      </Modal>
     </div>
+  );
+}
+
+type TabProps = { e: any; id: string; mutate: () => Promise<unknown> };
+
+function AboutSection({ e, id, mutate }: TabProps) {
+  const [links, setLinks] = useState<LinkRow[]>(e.links ?? []);
+  const [problem, setProblem] = useState("");
+  const save = async (body: object) => {
+    setProblem("");
+    try { await api(`/api/entities/${id}`, { method: "PATCH", body }); await mutate(); }
+    catch (err) { setProblem((err as Error).message); throw err; }
+  };
+  return (
+    <section aria-labelledby="about-h" className="h-fit space-y-4 rounded-2xl bg-card p-4">
+      <h2 id="about-h" className="px-2 font-semibold">About</h2>
+      <AutoField label="Name" value={e.name} onSave={(name) => save({ name })} />
+      <AutoField label="Notes" multiline value={e.description ?? ""} placeholder="Who they are, how you know" onSave={(description) => save({ description })} />
+      <div className="space-y-1.5 px-2">
+        <span className="text-xs font-medium text-muted">Labels</span>
+        <TagInput label="Labels" placeholder="e.g. exchange, kol" value={e.tags ?? []} onChange={(tags) => void save({ tags }).catch(() => {})} />
+      </div>
+      <div className="space-y-1.5 px-2">
+        <span className="text-xs font-medium text-muted">Links</span>
+        <LinkEditor value={links} onChange={setLinks} onCommit={(next) => void save({ links: next.filter((l) => l.url.trim()) }).catch(() => {})} />
+      </div>
+      <details className="px-2">
+        <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">More</summary>
+        <div className="mt-2 space-y-3">
+          <label className="block">
+            <span className="text-xs font-medium text-muted">Type</span>
+            <Select aria-label="Type" value={e.type} onChange={(ev) => void save({ type: ev.target.value }).catch(() => {})}>
+              {ENTITY_TYPES.map((t) => <option key={t} value={t}>{label(t)}</option>)}
+            </Select>
+          </label>
+          <AutoField label="Logo URL" value={e.avatarUrl ?? ""} placeholder="https://…" onSave={(avatarUrl) => save({ avatarUrl })} />
+        </div>
+      </details>
+      <ErrorNote>{problem}</ErrorNote>
+    </section>
+  );
+}
+
+function Step({ n, title, done, children }: { n: number; title: string; done: boolean; children: React.ReactNode }) {
+  return (
+    <li className="rounded-2xl bg-card p-4">
+      <h3 className="flex items-center gap-2 font-semibold">
+        <span aria-hidden className={`grid size-6 place-items-center rounded-full text-xs ${done ? "bg-good text-card" : "bg-wash text-muted"}`}>{done ? "✓" : n}</span>
+        {title}
+      </h3>
+      <div className="mt-3 pl-8 text-sm">{children}</div>
+    </li>
+  );
+}
+
+function PublicTab({ e, id, mutate }: TabProps) {
+  const [sigError, setSigError] = useState("");
+  const verified = e.verification?.status === "verified";
+  const isPublic = e.visibility === "public";
+  const kind: Kind = e.type === "individual" ? "person" : "project";
+  const shown = e.wallets.filter((w: any) => w.linkVisibility === "public").length;
+  const setVisibility = async (w: any, on: boolean) => {
+    setSigError("");
+    try { await api(`/api/entities/${id}/wallets`, { body: { walletId: w.id, relationship: w.relationship, visibility: on ? "public" : "private" } }); await mutate(); }
+    catch (err) { setSigError((err as Error).message); }
+  };
+  return (
+    <ol className="max-w-2xl space-y-3">
+      <Step n={1} title="Verify it's you" done={verified}>
+        {verified
+          ? <p className="text-muted">Verified. The profile shows what was proven.</p>
+          : <>
+              <p className="mb-3 text-muted">{e.type === "individual" ? "Profiles of individuals must be verified before they can be public." : "Optional, but without it the profile shows as self-claimed."}</p>
+              <Verify entity={e} onDone={() => void mutate()} />
+            </>}
+      </Step>
+      <Step n={2} title="Choose which wallets appear" done={shown > 0}>
+        {e.wallets.length ? (
+          <ul className="divide-y divide-line">
+            {e.wallets.map((w: any) => {
+              const signed = w.evidence?.some((x: any) => x.verifiedAt);
+              return (
+                <li key={w.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <label className="flex min-w-0 items-center gap-2">
+                    <input type="checkbox" checked={w.linkVisibility === "public"} onChange={(ev) => void setVisibility(w, ev.target.checked)} />
+                    <span className="truncate">{w.displayLabel || <Address value={w.address} />}</span>
+                  </label>
+                  {signed ? <Pill tone="good">✓ Signed</Pill> : (chainFamily(w.chain as ChainId) === "evm" || w.chain === "solana") && (
+                    <Button variant="ghost" onClick={async () => { setSigError(""); try { await signClaim(id, w.id, w.address, w.chain); await mutate(); } catch (err) { setSigError((err as Error).message); } }}>Prove with signature</Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : <p className="text-muted">Add wallets first, under Wallets on this page.</p>}
+        <ErrorNote>{sigError}</ErrorNote>
+        <p className="mt-2 text-xs text-muted">Unchecked wallets stay private. Your names, notes and private tags never appear.</p>
+      </Step>
+      <Step n={3} title={isPublic ? "Published" : "Publish"} done={isPublic}>
+        {isPublic ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/p/${e.slug}`} className="underline">tagawallet.com/p/{e.slug}</Link>
+            <Button className="ml-auto" onClick={async () => { await api(`/api/entities/${id}/publish`, { body: { publish: false } }); await mutate(); }}>Make private</Button>
+          </div>
+        ) : <Publish entity={e} onDone={() => void mutate()} />}
+      </Step>
+    </ol>
   );
 }

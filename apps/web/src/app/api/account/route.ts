@@ -47,6 +47,7 @@ export const DELETE = route(async ({ body, user }) => {
     db.collection("verifications").deleteMany({ entityId: { $in: entities } }),
     db.collection("events").deleteMany({ userId: id }),
     db.collection("sessions").deleteMany({ userId: id }),
+    db.collection("api_keys").deleteMany({ userId: id }),
     db.collection("tokens").deleteMany({ userId: id }),
     db.collection("lists").updateMany({ "collaborators.userId": id }, { $pull: { collaborators: { userId: id } } } as never),
     db.collection("reports").updateMany({ reporterId: id }, { $set: { reporterId: null } }),
