@@ -4,13 +4,18 @@ import { ApiError, route, ser } from "@/lib/api";
 import { getList, getOwnEntity, logActivity, track, trackFirst } from "@/lib/access";
 import { getDb } from "@/lib/db";
 import { addToList, hydrateWallets, normalizedFor, upsertWallet } from "@/lib/wallets";
-import { searchWallets } from "@/lib/search";
+import { searchWallets, walletFiltersFrom } from "@/lib/search";
 
 export const GET = route(async ({ user, req }) => {
-  const q = req.nextUrl.searchParams.get("q") ?? "";
-  const chain = req.nextUrl.searchParams.get("chain") ?? undefined;
-  const wallets = await searchWallets(user._id, q, chain, 100);
-  return ser(await hydrateWallets(wallets, user._id));
+  const p = req.nextUrl.searchParams;
+  const q = (p.get("q") ?? "").slice(0, 200);
+  const limit = Math.min(Math.max(Number(p.get("limit")) || 100, 1), 500);
+  const filters = await walletFiltersFrom(p, user._id);
+  // One extra tells the page whether there are more than it shows.
+  const wallets = await searchWallets(user._id, q, filters, limit + 1);
+  const hydrated = await hydrateWallets(wallets.slice(0, limit), user._id);
+  if (p.get("shape") === "page") return ser({ wallets: hydrated, more: wallets.length > limit });
+  return ser(hydrated);
 });
 
 export const POST = route(async ({ user, body }) => {

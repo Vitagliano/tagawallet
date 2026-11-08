@@ -76,6 +76,9 @@ export const walletCreateSchema = z.object({
   if (message) ctx.addIssue({ code: "custom", path: ["address"], message });
 });
 export const walletUpdateSchema = z.object({
+  // Fixing a typo'd address or the wrong chain, without losing the wallet's name, notes and lists.
+  address: z.string().trim().min(1, "Paste an address").max(120).optional(),
+  chain: z.enum(CHAIN_IDS).optional(),
   displayLabel: cleanText(120).optional(),
   notes: cleanText(5000).optional(),
   tags: tagsSchema.optional(),
@@ -119,11 +122,12 @@ export const extensionTagSchema = z.object({
   notes: cleanText(5000).optional().default(""),
   tags: tagsSchema.optional().default([]),
   status: z.string().trim().max(30).optional().default("none"),
-  links: linksSchema.optional().default([]),
   listId: objectId.optional(),
   newListName: cleanText(80).optional(),
   entityId: objectId.optional(),
   newEntityName: cleanText(120).optional(),
+  // Left out means "keep the wallet's links", since the quick form doesn't edit them.
+  links: linksSchema.optional(),
 }).superRefine((w, ctx) => {
   const message = addressError(w.address, w.chain);
   if (message) ctx.addIssue({ code: "custom", path: ["address"], message });
@@ -137,4 +141,5 @@ export const extensionSettingsSchema = z.object({
   cloudSync: z.boolean(),
   defaultListId: objectId.nullable(),
   theme: z.enum(["system", "light", "dark"]),
+  showUnknown: z.boolean(),
 }).partial();
