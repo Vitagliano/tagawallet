@@ -10,6 +10,7 @@ export const WALLET_STATUSES = ["none", "mine", "watchlist", "scam", "trusted"] 
 export const ENTITY_TYPES = ["individual", "project", "dao", "exchange", "protocol", "company", "other"] as const;
 export const LINK_STATUSES = ["official", "personal", "community", "source"] as const;
 export const RELATIONSHIPS = ["owner", "treasury", "hot_wallet", "cold_wallet", "associated", "custom"] as const;
+export type Relationship = (typeof RELATIONSHIPS)[number];
 export const ROLES = ["viewer", "editor", "admin"] as const;
 export const REPORT_REASONS = ["incorrect", "impersonation", "doxxing", "spam", "malicious_link", "stolen_profile", "other"] as const;
 export const VERIFY_METHODS = ["x_post", "dns", "meta", "ens", "signature"] as const;
@@ -70,6 +71,7 @@ export const walletCreateSchema = z.object({
   links: linksSchema.optional().default([]),
   listId: objectId.optional(),
   entityId: objectId.optional(),
+  relationship: z.enum(RELATIONSHIPS).optional().default("associated"),
   source: z.enum(["user", "import", "extension"]).optional().default("user"),
 }).superRefine((w, ctx) => {
   const message = addressError(w.address, w.chain);
@@ -126,6 +128,9 @@ export const extensionTagSchema = z.object({
   newListName: cleanText(80).optional(),
   entityId: objectId.optional(),
   newEntityName: cleanText(120).optional(),
+  /** When creating a person or project from the tag form. */
+  newEntityType: z.enum(["individual", "project", "dao", "exchange", "protocol", "company", "other"]).optional(),
+  relationship: z.enum(RELATIONSHIPS).optional().default("associated"),
   // Left out means "keep the wallet's links", since the quick form doesn't edit them.
   links: linksSchema.optional(),
 }).superRefine((w, ctx) => {
@@ -135,7 +140,7 @@ export const extensionTagSchema = z.object({
 
 export const extensionSettingsSchema = z.object({
   chipsEnabled: z.boolean(),
-  chipStyle: z.enum(["minimal", "badge", "hidden"]),
+  chipStyle: z.enum(["minimal", "badge", "hidden", "rail"]),
   disabledSites: z.array(z.string().max(255)).max(1000),
   enabledSites: z.array(z.string().max(255)).max(1000),
   cloudSync: z.boolean(),

@@ -3,19 +3,50 @@ import type { ResolveResult, ResolvedLabel } from "@tagawallet/shared/lite";
 export type QueryAddress = { normalized: string; kind: "evm" | "solana" | "bitcoin" | "ens" | "sns" };
 
 export interface Settings {
-  chipsEnabled: boolean; chipStyle: "minimal" | "badge" | "hidden"; disabledSites: string[]; enabledSites: string[];
+  chipsEnabled: boolean; chipStyle: "minimal" | "badge" | "hidden" | "rail"; disabledSites: string[]; enabledSites: string[];
   cloudSync: boolean; defaultListId: string | null; theme: "system" | "light" | "dark";
   /** A small mark on addresses nobody has tagged yet. Off shows chips only for known wallets. */
   showUnknown: boolean;
+  /** Toolbar icon shows how many tagged addresses are on the current page. Local to this browser. */
+  pageBadge: boolean;
+  /** Where the toolbar icon opens TagAWallet: floating over the page, or in Chrome's side panel. Local to this browser. */
+  panelMode: "float" | "side";
 }
 export const DEFAULT_SETTINGS: Settings = {
-  chipsEnabled: true, chipStyle: "badge", disabledSites: [], enabledSites: [], cloudSync: true, defaultListId: null, theme: "system", showUnknown: true,
+  chipsEnabled: true, chipStyle: "badge", disabledSites: [], enabledSites: [], cloudSync: true, defaultListId: null, theme: "system", showUnknown: true, pageBadge: true, panelMode: "float",
 };
+/** Settings that stay in this browser and are never sent to the account. */
+export const LOCAL_SETTINGS = ["disabledSites", "enabledSites", "cloudSync", "pageBadge", "panelMode"] as const;
+
+// ---- The panel's library: the dashboard's directory, read-only. ----
+
+export interface WalletRow {
+  id: string; address: string; chain: string; displayLabel: string; status?: string; tags?: string[]; own?: boolean; relationship?: string;
+  lists?: { id: string; name: string; visibility?: string }[];
+  entities?: { id: string; name: string; type?: string; relationship?: string }[];
+}
+export interface LibraryList { id: string; name: string; visibility: string; role: string | null; walletCount: number; shared: boolean; isPublic: boolean }
+export interface LibraryEntity { id: string; name: string; type?: string; walletCount: number; isPublic: boolean; verified: boolean; avatarUrl?: string }
+export interface Library { lists: LibraryList[]; entities: LibraryEntity[]; recent: WalletRow[]; counts: { wallets: number; lists: number; entities: number } }
+export interface Collection {
+  kind: "list" | "entity"; id: string; name: string; type?: string; description?: string; role?: string | null; own?: boolean;
+  shared?: boolean; isPublic?: boolean; verified?: boolean; slug?: string; total: number; wallets: WalletRow[];
+}
+/** Where one wallet is filed, from the dashboard's record of it. */
+export interface WalletFiling { id: string; own: boolean; lists: { id: string; name: string; visibility?: string }[]; entities: { id: string; name: string; type?: string; relationship?: string }[] }
+export interface SearchResult { wallets: WalletRow[]; entities: { id: string; name: string; type?: string }[] }
+/** `null` data means it couldn't be loaded: offline, signed out, or the server refused. */
+export type Loaded<T> = { data: T | null; error?: string; cached?: boolean };
+
+/** What the content script reports after each lookup. Counts only, never addresses or page text. */
+export interface PageSummary { tagged: number; flagged: number; seen: number }
 
 export interface TagInput {
   address: string; chain: string; displayLabel: string; notes?: string; tags?: string[]; status?: string;
   links?: { type: string; url: string; label?: string; status?: string }[];
   listId?: string; newListName?: string; entityId?: string; newEntityName?: string;
+  newEntityType?: "individual" | "project" | "dao" | "exchange" | "protocol" | "company" | "other";
+  relationship?: string;
 }
 export interface Bootstrap {
   user: { displayName: string; email: string | null } | null;
@@ -62,6 +93,20 @@ export type Message =
   | { type: "sites" }
   | { type: "flush" }
   | { type: "track"; name: string; value?: number }
+  | { type: "pageSummary"; summary: PageSummary }
+  /** `cached` answers at once from the last copy, for an instant first paint. */
+  | { type: "library"; cached?: boolean }
+  | { type: "collection"; kind: "list" | "entity"; id: string }
+  | { type: "search"; q: string }
+  | { type: "wallet"; id: string }
+  /** Content script → background: show this in the side panel if that's where the person keeps it. Replies { opened }. */
+  | { type: "openRoute"; route: Route }
+  /** Side panel → background: what a page asked to show before the panel was open, if anything. */
+  | { type: "takeRoute"; tabId: number }
+  /** Content script → background: the nonce for the floating frame it is about to place in this tab. */
+  | { type: "floatNonce"; nonce: string }
+  /** Floating panel → background: is this frame one our content script placed? Replies a boolean. */
+  | { type: "checkFloat"; nonce: string }
   | { type: "open"; path: string };
 
 export function send<T = any>(message: Message): Promise<T> {
@@ -72,7 +117,27 @@ export type TabMessage =
   | { type: "taw:scan" }
   | { type: "taw:refresh" }
   | { type: "taw:settings" }
-  | { type: "taw:tagSelection"; text: string };
+  | { type: "taw:tagSelection"; text: string }
+  /** Scrolls the page to an address's chip and highlights it. Replies { found }. */
+  | { type: "taw:locate"; normalized: string }
+  /** Toolbar click in floating mode: show or hide the panel over the page. */
+  | { type: "taw:togglePanel" }
+  /** From the side panel's "Float over the page": open it, never toggle it shut. */
+  | { type: "taw:openPanel" }
+  /** The panel moved to the side panel, so the floating one closes. */
+  | { type: "taw:closePanel" };
+
+/** Background → side panel: a tab's labels changed, so the panel rescans it; or a page asked it to show something. */
+export type PanelMessage = { type: "taw:pageChanged"; tabId: number } | { type: "taw:route"; tabId: number; route: Route };
+
+/**
+ * Where the panel opens when a page asks for it: the tag form, a wallet's details, or a contact or list.
+ * Pages only ever name an address they found or a contact the server already labeled.
+ */
+export type Route =
+  | { view: "tag"; address: string; kind: "evm" | "solana" | "bitcoin" }
+  | { view: "wallet"; address: string; kind: "evm" | "solana" | "bitcoin" }
+  | { view: "collection"; kind: "list" | "entity"; id: string; name: string; type?: string };
 
 export interface Detected { raw: string; normalized: string; kind: QueryAddress["kind"] | "x"; chain: string; labels: ResolvedLabel[] }
 export type { ResolveResult, ResolvedLabel };

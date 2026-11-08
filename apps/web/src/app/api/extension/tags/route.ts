@@ -40,8 +40,9 @@ export const POST = route(async ({ user, body }) => {
   if (same) entityId = same._id.toString();
   else if (input.newEntityName) {
     const now = new Date();
+    const type = input.newEntityType === "individual" ? "individual" : (input.newEntityType ?? "project");
     const { insertedId } = await db.collection("entities").insertOne({
-      name: input.newEntityName, type: "other", description: "", avatarUrl: null, links: [], tags: [], ownerId: user._id, visibility: "private",
+      name: input.newEntityName, type, description: "", avatarUrl: null, links: [], tags: [], ownerId: user._id, visibility: "private",
       verification: { status: "unverified", verifiedAt: null, verifiedBy: null, methods: [] }, createdAt: now, updatedAt: now,
     });
     entityId = insertedId.toString();
@@ -51,7 +52,8 @@ export const POST = route(async ({ user, body }) => {
     const entity = await getOwnEntity(entityId, user._id);
     const now = new Date();
     await db.collection("wallet_entity_links").updateOne({ walletId: wallet._id, entityId: entity._id }, {
-      $setOnInsert: { relationship: "associated", visibility: "private", source: "extension", claimedBy: user._id, evidence: [], createdAt: now, updatedAt: now },
+      $set: { relationship: input.relationship ?? "associated", updatedAt: now },
+      $setOnInsert: { visibility: "private", source: "extension", claimedBy: user._id, evidence: [], createdAt: now },
     }, { upsert: true });
   }
   await trackFirst("first_wallet_tagged_from_extension", user._id);

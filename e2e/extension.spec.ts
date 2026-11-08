@@ -44,21 +44,34 @@ test("manifest asks for no broad host access by default", () => {
   expect(m.manifest_version).toBe(3);
   expect(m.host_permissions).toBeUndefined();
   expect(m.content_scripts).toBeUndefined();
-  expect(m.permissions.sort()).toEqual(["activeTab", "alarms", "contextMenus", "scripting", "storage"]);
+  expect(m.permissions.sort()).toEqual(["activeTab", "alarms", "contextMenus", "scripting", "sidePanel", "storage"]);
+  expect(m.side_panel.default_path).toBe("panel.html");
+  // The toolbar click opens the panel itself, so there's no popup.
+  expect(m.action.default_popup).toBeUndefined();
+  // Only the panel page can be framed by sites, and only on https.
+  expect(m.web_accessible_resources).toEqual([{ resources: ["panel.html"], matches: ["https://*/*"] }]);
   expect(JSON.stringify(m)).not.toContain("<all_urls>");
   for (const banned of ["history", "downloads", "cookies", "clipboardRead", "tabs", "webRequest"]) expect(m.permissions).not.toContain(banned);
   expect(m.externally_connectable.matches).toEqual(["https://tagawallet.com/*"]);
 });
 
-test("first-run page opens on install, and the popup shows the empty state", async () => {
+const PANEL = () => `chrome-extension://${extensionId}/panel.html`;
+
+test("first-run page opens on install, and the panel shows the empty state", async () => {
   await expect.poll(() => context.pages().some((p) => p.url().includes("welcome.html"))).toBe(true);
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-  await expect(popup.getByText("Open a website to see wallets on it.", { exact: false })).toBeVisible();
-  await expect(popup.getByRole("button", { name: "Paste address to tag" })).toBeVisible();
-  await expect(popup.getByRole("button", { name: "Open dashboard" })).toBeVisible();
-  await expect(popup.getByRole("button", { name: "Connect account" })).toBeVisible();
-  await popup.close();
+  const panel = await context.newPage();
+  await panel.goto(PANEL());
+  await panel.getByRole("tab", { name: "This page" }).click();
+  await expect(panel.getByText("Browser pages can't be scanned.", { exact: false })).toBeVisible();
+  await panel.getByRole("tab", { name: "Library" }).click();
+  await expect(panel.getByText("Your contacts and lists live here")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Paste address to tag" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Open dashboard" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Connect account" }).first()).toBeVisible();
+  // Docked to the side, it offers to float instead. There's nothing to close or drag.
+  await expect(panel.getByRole("button", { name: "Float over the page" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Close" })).toHaveCount(0);
+  await panel.close();
 });
 
 test("detects addresses, ignores hashes and inputs, and keeps the layout intact", async () => {
@@ -85,13 +98,24 @@ test("detects addresses, ignores hashes and inputs, and keeps the layout intact"
   await page.close();
 });
 
-test("the tag form asks an unconnected person to connect", async () => {
+/** The floating panel's frame on a page, once a chip, card or right-click has opened it. */
+const panelFrame = async (page: Page) => {
+  const live = () => page.frames().filter((f) => f.url().includes("panel.html?host=float") && !f.url().includes("guessed") && !f.isDetached());
+  await expect.poll(() => live().length).toBeGreaterThan(0);
+  return live().at(-1)!;
+};
+
+test("an untagged address opens the tag form in the floating panel, which asks an unconnected person to connect", async () => {
   const page = await context.newPage();
   await page.goto(FIXTURE);
   await chipOn(page, "#plain").getByRole("button").click();
-  await expect(page.locator("tagawallet-card").getByText("Connect to save tags")).toBeVisible();
-  await page.keyboard.press("Escape");
+  // No card for an address nobody tagged: tagging is the only thing to do, so the panel opens on the form.
   await expect(page.locator("tagawallet-card")).toHaveCount(0);
+  const panel = await panelFrame(page);
+  await expect(panel.getByRole("heading", { name: "Connect to save tags" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Connect account" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("tagawallet-panel")).toHaveCount(0);
   await page.close();
 });
 
@@ -110,48 +134,68 @@ test("connecting hands the session to the extension, and a tag saves from the pa
 
   await page.goto(FIXTURE);
   await chipOn(page, "#plain").getByRole("button").click();
-  const card = page.locator("tagawallet-card");
-  await expect(card.getByRole("heading", { name: "Tag this wallet" })).toBeVisible();
-  await card.getByRole("button", { name: "Save" }).click();
-  await expect(card.getByRole("alert")).toHaveText("Add a name.");
-  await card.getByLabel("Name", { exact: true }).fill("Alice's trading wallet");
-  await card.getByRole("button", { name: "Watchlist" }).click();
-  await expect(card.getByRole("button", { name: "Watchlist" })).toHaveAttribute("aria-pressed", "true");
-  await card.getByLabel("Your own labels").fill("trader, whale");
-  await card.getByLabel("List", { exact: true }).selectOption("__new");
-  await card.getByLabel("New list name").fill("Alice LLC watch");
-  await card.getByRole("button", { name: "+ Add a note" }).click();
-  await card.getByLabel("Notes").fill("from extension");
-  await expect(card.getByText("Private to you", { exact: true })).toBeVisible();
-  await card.getByRole("button", { name: "Save" }).click();
-  await expect(card.getByRole("status")).toHaveText("Saved to Alice LLC watch.");
+  let panel = await panelFrame(page);
+  await expect(panel.getByRole("heading", { name: "Tag this wallet" })).toBeVisible();
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.getByRole("alert")).toHaveText("Add a name for this address.");
+  await panel.getByLabel("Name for this address").fill("Alice's trading wallet");
+  await panel.getByRole("button", { name: "Watchlist" }).click();
+  await expect(panel.getByRole("button", { name: "Watchlist" })).toHaveAttribute("aria-pressed", "true");
+  await panel.getByLabel("Your own labels").fill("trader, whale");
+  await panel.getByLabel("Also in a list").selectOption("__new");
+  await panel.getByLabel("New list name").fill("Alice LLC watch");
+  await panel.getByRole("button", { name: "+ Add a note" }).click();
+  await panel.getByLabel("Notes").fill("from extension");
+  await expect(panel.getByText("One-off name, private to you", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Saved to Alice LLC watch.");
+  // Then it shows what was saved: the wallet, where it's filed, and your note.
+  await expect(panel.getByRole("heading", { name: "Alice's trading wallet" })).toBeVisible();
+  await expect(panel.getByRole("region", { name: "Filed in" })).toContainText("Alice LLC watch");
+  await expect(panel.getByRole("region", { name: "Your note" })).toContainText("from extension");
 
   // Chip updates in place, and the card shows identity and provenance.
   await expect(chipOn(page, "#plain").getByRole("button")).toHaveText("Alice's trading wallet");
-  await expect(card).toHaveCount(0, { timeout: 5000 });
+  // Inside the panel, Escape steps back first (wallet → tabs), then closes it. Close shuts it at once.
+  await panel.getByRole("button", { name: "Close" }).click();
+  await expect(page.locator("tagawallet-panel")).toHaveCount(0);
+  const card = page.locator("tagawallet-card");
   await chipOn(page, "#plain").getByRole("button").click();
   await expect(card.getByRole("heading", { name: "Alice's trading wallet" })).toBeVisible();
   await expect(card.getByText("Your private tag")).toBeVisible();
-  await expect(card.getByText("watchlist", { exact: true })).toBeVisible();
+  await expect(card.getByText("Watchlist", { exact: true })).toBeVisible();
   await expect(card.getByText("whale", { exact: true })).toBeVisible();
-  for (const b of ["Edit tag", "Open in TagAWallet", "Copy address"]) await expect(card.getByRole("button", { name: b })).toBeVisible();
+  for (const b of ["Edit tag", "Details in TagAWallet", "Copy address"]) await expect(card.getByRole("button", { name: b })).toBeVisible();
   // Your own tag can be copied or removed, but not reported.
   await card.getByRole("button", { name: "More actions" }).click();
   await expect(card.getByRole("menuitem", { name: "Copy label" })).toBeVisible();
+  await expect(card.getByRole("menuitem", { name: "Open in dashboard" })).toBeVisible();
   await expect(card.getByRole("menuitem", { name: "Remove my tag" })).toBeVisible();
   await expect(card.getByRole("menuitem", { name: "Report this label" })).toHaveCount(0);
   await card.getByRole("button", { name: "More actions" }).click();
 
-  // Editing keeps what was there.
+  // Editing opens the panel on the form, keeping what was there. The card gets out of the way.
   await card.getByRole("button", { name: "Edit tag" }).click();
-  await expect(card.getByLabel("Name", { exact: true })).toHaveValue("Alice's trading wallet");
-  await expect(card.getByLabel("Notes")).toHaveValue("from extension");
-  await expect(card.getByRole("button", { name: "Watchlist" })).toHaveAttribute("aria-pressed", "true");
-  await card.getByRole("button", { name: "Cancel" }).click();
   await expect(card).toHaveCount(0);
+  panel = await panelFrame(page);
+  await expect(panel.getByLabel("Name for this address")).toHaveValue("Alice's trading wallet");
+  await expect(panel.getByLabel("Notes")).toHaveValue("from extension");
+  await expect(panel.getByRole("button", { name: "Watchlist" })).toHaveAttribute("aria-pressed", "true");
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel.getByRole("tab", { name: "This page" })).toBeVisible();
+
+  // Details opens the wallet in the same panel, not the dashboard.
+  await chipOn(page, "#plain").getByRole("button").click();
+  await card.getByRole("button", { name: "Details in TagAWallet" }).click();
+  await expect(panel.getByRole("heading", { name: "Alice's trading wallet" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Find on page" })).toBeVisible();
+  await panel.getByRole("button", { name: "Back" }).click();
+  await expect(panel.getByRole("tab", { name: "This page" })).toBeVisible();
+
   await chipOn(page, "#plain").getByRole("button").click();
   await page.mouse.click(5, 5);
   await expect(card).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   const api = await page.request.get("http://localhost:3200/api/search?q=alice");
   const body = await api.json();
@@ -170,7 +214,8 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   // Mirrors real X: no test ids, a bare @handle in the header, and @handle links on posts.
   const html = `<!doctype html><title>X</title><body><main><div><div><span>Linked Person</span></div><div><span><span id="at">@LinkedPerson</span></span></div></div>
     <article><span><a href="/LinkedPerson"><span>Linked Person</span></a></span><span><a id="author" href="/LinkedPerson"><span>@LinkedPerson</span></a></span><a href="/LinkedPerson/status/1">Oct 28</a></article>
-    <article><span><a href="/stranger"><span>Stranger</span></a></span><span><a href="/stranger"><span>@stranger</span></a></span></article></main></body>`;
+    <article><span><a href="/stranger"><span>Stranger</span></a></span><span><a href="/stranger"><span>@stranger</span></a></span></article>
+    <article><span>building with <a href="/nowalletco">@nowalletco</a></span></article></main></body>`;
   await context.route("https://x.com/**", (r) => r.fulfill({ contentType: "text/html", body: html }));
   await ext({ type: "updateSettings", patch: {} });
   const page = await context.newPage();
@@ -178,7 +223,7 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   await page.goto("https://x.com/LinkedPerson");
   const header = page.locator("tagawallet-chip[data-tagawallet-profile]");
   await expect(header.getByRole("button")).toHaveText("Linked person");
-  await expect(page.locator("article tagawallet-chip")).toHaveCount(1);
+  await expect(page.locator("article tagawallet-chip")).toHaveCount(2);
   await header.getByRole("button").click();
   await expect(page.locator("tagawallet-card").getByText("Your private tag")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -186,6 +231,17 @@ test("recognizes a linked X account on its profile and posts, across in-app navi
   // X changes profile without a reload and reuses the header element.
   await page.evaluate(() => { history.pushState({}, "", "/stranger"); const at = document.getElementById("at")!; at.textContent = "@stranger"; });
   await expect(header).toHaveCount(0);
+  // On someone else's profile, every account recognized in posts and bios is on the page list and in the badge,
+  // not just the profile's owner.
+  const p = await context.newPage();
+  await p.goto(`chrome-extension://${extensionId}/options.html`);
+  const xTab = await p.evaluate(async () => (await chrome.tabs.query({ url: "https://x.com/*" }))[0]?.id);
+  await expect.poll(async () => ((await p.evaluate((t) => chrome.tabs.sendMessage(t!, { type: "taw:scan" }), xTab)) as { detected: { labels: { label: string }[] }[] })
+    .detected.map((d) => d.labels[0]?.label).sort()).toEqual(["Linked person", "No Wallet Co"]);
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t! }), xTab)).toBe("2");
+  // Find works for an account chip too.
+  expect(await p.evaluate((t) => chrome.tabs.sendMessage(t!, { type: "taw:locate", normalized: "0xd1220a0cf47c7b9be7a2e6ba89f429762e7b9adb" }), xTab)).toEqual({ found: true });
+  await p.close();
   await page.evaluate(() => { history.pushState({}, "", "/nowalletco"); document.getElementById("at")!.textContent = "@nowalletco"; });
   await expect(header.getByRole("button")).toHaveText("No Wallet Co");
   await page.close();
@@ -215,10 +271,10 @@ test("offline: a tag is saved locally and syncs later", async () => {
   const page = await context.newPage();
   await page.goto(FIXTURE);
   await chipOn(page, "#linked").getByRole("button").click();
-  const card = page.locator("tagawallet-card");
-  await card.getByLabel("Name", { exact: true }).fill("Offline tag");
-  await card.getByRole("button", { name: "Save" }).click();
-  await expect(card.getByRole("status")).toContainText("when you're back online");
+  const panel = await panelFrame(page);
+  await panel.getByLabel("Name for this address").fill("Offline tag");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.getByRole("status")).toContainText("when you're back online");
   await expect(chipOn(page, "#linked").getByRole("button")).toHaveText("Offline tag");
   expect((await ext({ type: "status" })).queued).toBe(1);
 
@@ -263,11 +319,11 @@ test("settings: chips can be turned off globally, per site and by style", async 
   await page.close();
 });
 
-test("the popup lists detected addresses for the active page, and loads fast", async () => {
+test("the panel's library: paste to tag, look up an address, search, and open a list", async () => {
   const page = await context.newPage();
   await page.goto(FIXTURE);
   await expect(chipOn(page, "#plain")).toHaveCount(1);
-  const tabId = await (async () => {
+  const scan = await (async () => {
     const p = await context.newPage();
     await p.goto(`chrome-extension://${extensionId}/options.html`);
     const id = await p.evaluate(async () => (await chrome.tabs.query({ url: "http://localhost:3201/*" }))[0]?.id);
@@ -275,27 +331,193 @@ test("the popup lists detected addresses for the active page, and loads fast", a
     await p.close();
     return result;
   })();
-  const detected = tabId.detected as { normalized: string; labels: { label: string }[] }[];
+  const detected = scan.detected as { normalized: string; labels: { label: string }[] }[];
   expect(detected.find((d) => d.normalized === A1.toLowerCase())?.labels[0]?.label).toBe("Alice's trading wallet");
   expect(detected.length).toBeGreaterThanOrEqual(3);
 
-  const popup = await context.newPage();
+  const panel = await context.newPage();
   const started = Date.now();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-  await expect(popup.getByText("Open a website to see wallets on it.", { exact: false }).or(popup.getByText("addresses on this page"))).toBeVisible();
-  console.log(`popup visible after ${Date.now() - started}ms`);
-  expect(Date.now() - started).toBeLessThan(1000);
-  await popup.getByRole("button", { name: "Paste address to tag" }).click();
-  await popup.getByLabel("Address").fill("0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB");
-  await popup.getByLabel("Name", { exact: true }).fill("Pasted");
-  await popup.getByRole("button", { name: "Save" }).click();
-  await expect(popup.getByRole("status")).toContainText("Saved.");
+  await panel.goto(PANEL());
+  await panel.getByRole("tab", { name: "Library" }).click();
+  await expect(panel.getByRole("region", { name: "Lists" })).toBeVisible();
+  console.log(`panel library visible after ${Date.now() - started}ms`);
+  expect(Date.now() - started).toBeLessThan(1500);
 
-  // "Who is this?" finds a known address straight away.
-  await popup.getByLabel("Look up an address").fill(A1);
-  await expect(popup.getByText("Alice's trading wallet")).toBeVisible();
-  await expect(popup.getByRole("button", { name: "Edit tag" })).toBeVisible();
-  await popup.close();
+  await panel.getByRole("button", { name: "Paste address to tag" }).click();
+  await panel.getByLabel("Address", { exact: true }).fill("0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB");
+  await panel.getByLabel("Name for this address").fill("Pasted");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(panel.getByRole("status")).toContainText("Saved.");
+
+  // "Who is this?": a pasted address is looked up straight away.
+  const search = panel.getByLabel("Search wallets, people and lists, or paste an address");
+  await search.fill(A1);
+  await expect(panel.getByText("Alice's trading wallet")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Edit tag" })).toBeVisible();
+
+  // Words search the directory here and your wallets on the server, like the dashboard's search.
+  await search.fill("alice");
+  await expect(panel.getByRole("region", { name: "Contacts and lists" }).getByText("Alice LLC watch")).toBeVisible();
+  await expect(panel.getByRole("region", { name: "Wallets" }).getByText("Alice's trading wallet")).toBeVisible();
+  await search.fill("nothing like this");
+  await expect(panel.getByText("No matches")).toBeVisible();
+  await search.fill("");
+
+  // A list opens in place, with its wallets, and Back returns to the library.
+  await panel.getByRole("region", { name: "Lists" }).getByRole("button", { name: /Alice LLC watch/ }).click();
+  await expect(panel.getByRole("heading", { name: "Alice LLC watch" })).toBeVisible();
+  await expect(panel.getByText("Alice's trading wallet")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Open Alice LLC watch in the dashboard" })).toBeVisible();
+  await panel.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(panel.getByRole("region", { name: "Recently changed" })).toBeVisible();
+  await panel.close();
+  await page.close();
+});
+
+const fixtureTabId = async () => {
+  const p = await context.newPage();
+  await p.goto(`chrome-extension://${extensionId}/options.html`);
+  const id = await p.evaluate(async () => (await chrome.tabs.query({ url: "http://localhost:3201/*" }))[0]?.id);
+  return { p, id: id! };
+};
+
+test("the toolbar badge counts tagged addresses on the page, red when one is flagged", async () => {
+  const page = await context.newPage();
+  await page.goto(FIXTURE);
+  await expect(chipOn(page, "#plain").getByRole("button")).toHaveText("Alice's trading wallet");
+  const { p, id } = await fixtureTabId();
+  // Earlier tests tagged more than one address here. Alice's wallet is the only flagged one: it's on the watchlist.
+  const scan = await p.evaluate((t) => chrome.tabs.sendMessage(t, { type: "taw:scan" }), id) as { detected: { labels: unknown[] }[] };
+  const tagged = String(scan.detected.filter((d) => d.labels.length).length);
+  expect(Number(tagged)).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t }), id)).toBe(tagged);
+  expect(await p.evaluate((t) => chrome.action.getBadgeBackgroundColor({ tabId: t }), id)).toEqual([179, 38, 30, 255]);
+  expect(await p.evaluate((t) => chrome.action.getTitle({ tabId: t }), id)).toContain(`${tagged} tagged on this page, 1 flagged`);
+
+  // Switched off, every tab goes back to sync status only.
+  await ext({ type: "updateSettings", patch: { pageBadge: false } });
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t }), id)).toBe("");
+  await ext({ type: "updateSettings", patch: { pageBadge: true } });
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t }), id)).toBe(tagged);
+
+  // Leaving the page clears its count.
+  await page.goto("about:blank");
+  await expect.poll(() => p.evaluate((t) => chrome.action.getBadgeText({ tabId: t }), id)).toBe("");
+  await p.close();
+  await page.close();
+});
+
+test("rail chips are a colour strip, with the name on hover", async () => {
+  await ext({ type: "updateSettings", patch: { chipStyle: "rail" } });
+  const page = await context.newPage();
+  await page.goto(FIXTURE);
+  const rail = chipOn(page, "#plain").getByRole("button");
+  await expect(rail).toHaveClass(/rail/);
+  await expect(rail).toHaveClass(/flagged/);
+  await expect(rail).toHaveAttribute("data-tip", /Alice's trading wallet/);
+  await expect(rail).toHaveText("");
+  expect(await rail.evaluate((b) => b.getBoundingClientRect().width)).toBeLessThan(8);
+  await ext({ type: "updateSettings", patch: { chipStyle: "badge" } });
+  await expect(rail).toHaveText("Alice's trading wallet");
+  await page.close();
+});
+
+test("docked to the side, the panel groups the page's addresses, finds one on the page, and follows the active tab", async () => {
+  const page = await context.newPage();
+  await page.goto(FIXTURE);
+  await expect(chipOn(page, "#plain").getByRole("button")).toHaveText("Alice's trading wallet");
+  const panel = await context.newPage();
+  await panel.goto(PANEL());
+  await page.bringToFront();
+  await panel.getByRole("tab", { name: "This page" }).click();
+
+  const flagged = panel.getByRole("region", { name: "Flagged" });
+  await expect(flagged.getByText("Alice's trading wallet")).toBeVisible();
+  const summary = panel.getByRole("group", { name: "Summary" });
+  await expect(summary).toContainText("1Flagged");
+  await expect(panel.getByRole("region", { name: "Not tagged" })).toBeVisible();
+
+  // The counts filter the list.
+  await summary.getByRole("button", { name: /Flagged/ }).click();
+  await expect(panel.getByRole("region", { name: "Not tagged" })).toHaveCount(0);
+  await summary.getByRole("button", { name: /Flagged/ }).click();
+
+  // "Find" scrolls to the chip and flashes it.
+  await flagged.getByRole("button", { name: "Find" }).click();
+  await expect.poll(() => page.locator(`tagawallet-chip[data-address="${A1.toLowerCase()}"]`).evaluateAll((chips) =>
+    chips.some((c) => c.shadowRoot?.querySelector("button")?.style.outline.includes("2px")))).toBe(true);
+
+  // A tag saved elsewhere shows up without reopening the panel.
+  const late = "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb";
+  await page.locator("#add").click();
+  await expect(chipOn(page, "#dyn")).toHaveCount(1);
+  await ext({ type: "tag", input: { address: late, chain: "ethereum", displayLabel: "Late arrival", tags: [] } });
+  await page.bringToFront(); // ext() briefly opened a tab of its own.
+  await expect(panel.getByRole("region", { name: "Tagged" }).getByText("Late arrival")).toBeVisible();
+
+  // It follows the tab in front.
+  const other = await context.newPage();
+  await other.goto(`chrome-extension://${extensionId}/options.html`);
+  await other.bringToFront();
+  await expect(panel.getByText("Browser pages can't be scanned.", { exact: false })).toBeVisible();
+  await page.bringToFront();
+  await expect(flagged.getByText("Alice's trading wallet")).toBeVisible();
+  await other.close();
+  await panel.close();
+  await page.close();
+});
+
+test("floating, the panel opens over the page, moves, shows the library, and closes on Escape", async () => {
+  const page = await context.newPage();
+  // Its own path, so the tab lookup below can only find this tab, never one an earlier test left open.
+  await page.goto(`${FIXTURE}float`);
+  await expect(chipOn(page, "#plain").getByRole("button")).toHaveText("Alice's trading wallet");
+  const p = await context.newPage();
+  await p.goto(`chrome-extension://${extensionId}/options.html`);
+  const id = await p.evaluate(async () => (await chrome.tabs.query({ url: "http://localhost:3201/float" }))[0]?.id);
+  expect(id).toBeDefined();
+  // What the toolbar click does in floating mode.
+  await expect.poll(() => p.evaluate((t) => chrome.tabs.sendMessage(t!, { type: "taw:togglePanel" }).then(() => true, () => false), id)).toBe(true);
+  await p.close();
+  await expect(page.locator("tagawallet-panel")).toHaveCount(1);
+  await expect.poll(() => page.frames().some((f) => f.url().includes("panel.html"))).toBe(true);
+  const frame = page.frames().find((f) => f.url().includes("panel.html"))!;
+
+  // It belongs to this page: its page tab lists this page's wallets.
+  await frame.getByRole("tab", { name: "This page" }).click();
+  await expect(frame.getByRole("region", { name: "Flagged" }).getByText("Alice's trading wallet")).toBeVisible();
+  for (const b of ["Move to side panel", "Close", "Settings", "Paste address to tag"]) await expect(frame.getByRole("button", { name: b })).toBeVisible();
+  await frame.getByRole("tab", { name: "Library" }).click();
+  await expect(frame.getByRole("region", { name: "Lists" }).getByText("Alice LLC watch")).toBeVisible();
+
+  // The header drags it, it stays inside the window, and the spot is remembered.
+  const host = page.locator("tagawallet-panel");
+  const before = await host.evaluate((h) => parseFloat(h.style.right));
+  const bar = (await frame.locator("header").boundingBox())!;
+  await page.mouse.move(bar.x + 150, bar.y + bar.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bar.x + 30, bar.y + bar.height / 2 + 400, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => host.evaluate((h) => parseFloat(h.style.right))).toBeGreaterThan(before + 80);
+  const box = (await host.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+  const ext2 = await context.newPage();
+  await ext2.goto(`chrome-extension://${extensionId}/options.html`);
+  // Saved when the drag ends, which lands a moment later.
+  await expect.poll(async () => (await ext2.evaluate(() => chrome.storage.local.get("floatPanel"))).floatPanel?.right ?? 0).toBeGreaterThan(before + 80);
+  await ext2.close();
+
+  // A page that frames the panel itself gets nothing: it only draws in a frame our script placed.
+  await page.evaluate((src) => { const f = document.createElement("iframe"); f.src = src; document.body.append(f); }, `${PANEL()}?host=float&n=guessed`);
+  await expect.poll(() => page.frames().some((f) => f.url().includes("n=guessed"))).toBe(true);
+  const forged = page.frames().find((f) => f.url().includes("n=guessed"))!;
+  await expect(forged.getByText("Open TagAWallet from its toolbar icon.")).toBeVisible();
+  await expect(forged.getByRole("tab")).toHaveCount(0);
+
+  // Escape closes it.
+  await page.locator("h1").click();
+  await page.keyboard.press("Escape");
+  await expect(host).toHaveCount(0);
   await page.close();
 });
 
@@ -331,10 +553,11 @@ test("right-click tagging opens the tag form for a selected address, and explain
   await card.getByRole("button", { name: "OK" }).click();
   await expect(card).toHaveCount(0);
 
-  // A known address opens straight on the form, prefilled.
+  // A known address opens straight on the form in the panel, prefilled.
   await fixtureTab({ type: "taw:tagSelection", text: ` ${A1} ` });
-  await expect(card.getByRole("heading", { name: "Edit tag" })).toBeVisible();
-  await expect(card.getByLabel("Name", { exact: true })).toHaveValue("Alice's trading wallet");
+  const panel = await panelFrame(page);
+  await expect(panel.getByRole("heading", { name: "Edit tag" })).toBeVisible();
+  await expect(panel.getByLabel("Name for this address")).toHaveValue("Alice's trading wallet");
   await page.keyboard.press("Escape");
   await page.close();
 });
@@ -370,10 +593,11 @@ test("a tag the server refuses is kept under Needs attention instead of being dr
   expect(status.failed[0]).toMatchObject({ error: "That list is archived.", input: { displayLabel: "Refused one" } });
 
   const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.goto(PANEL());
   await expect(popup.getByText("Needs attention")).toBeVisible();
   await expect(popup.getByText("That list is archived.")).toBeVisible();
-  expect(await popup.evaluate(() => chrome.action.getBadgeText({}))).toBe("1");
+  // Pending and failed tags are a dot now: the number is the page's tagged count.
+  expect(await popup.evaluate(() => chrome.action.getBadgeText({}))).toBe("•");
 
   await context.unroute("**/api/extension/tags");
   await popup.getByRole("button", { name: "Retry" }).click();
@@ -396,7 +620,7 @@ test("an expired session is shown with a badge and a reconnect prompt", async ()
   await ext({ type: "resolve", addresses: [{ normalized: "0x000000000000000000000000000000000000dead", kind: "evm" }] });
   expect((await ext({ type: "status" })).authState).toBe("expired");
   const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.goto(PANEL());
   await expect(popup.getByText("Your session expired.", { exact: false })).toBeVisible();
   await expect(popup.getByRole("button", { name: "Reconnect" })).toBeVisible();
   expect(await popup.evaluate(() => chrome.action.getBadgeText({}))).toBe("!");
@@ -406,6 +630,6 @@ test("an expired session is shown with a badge and a reconnect prompt", async ()
   const page = await context.newPage();
   await page.goto(FIXTURE);
   await chipOn(page, "#sol").getByRole("button").click();
-  await expect(page.locator("tagawallet-card").getByRole("heading", { name: "Your session expired" })).toBeVisible();
+  await expect((await panelFrame(page)).getByRole("heading", { name: "Your session expired" })).toBeVisible();
   await page.close();
 });

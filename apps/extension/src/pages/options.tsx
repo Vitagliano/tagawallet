@@ -44,15 +44,26 @@ function App() {
       <h1 style={{ fontSize: 22 }}>Settings</h1>
 
       <section className="card">
+        <h2 className="section-title">Panel</h2>
+        <p className="muted" style={{ margin: "0 0 8px" }}>What opens when you click the TagAWallet icon: your page&apos;s wallets and your library.</p>
+        <label className="f">The toolbar icon opens<select value={s.panelMode} onChange={(e) => void patch({ panelMode: e.target.value as Settings["panelMode"] })}>
+          <option value="float">A floating panel over the page</option><option value="side">Chrome&apos;s side panel</option>
+        </select></label>
+        <p className="muted" style={{ margin: "6px 0 0" }}>You can also switch from the panel&apos;s header at any time.</p>
+      </section>
+
+      <section className="card">
         <h2 className="section-title">Chips</h2>
         <p className="muted" style={{ margin: "0 0 8px" }}>The small labels shown next to addresses on websites.</p>
         <label className="f">Chip style<select value={chips} onChange={(e) => {
           const v = e.target.value;
           void patch(v === "off" ? { chipsEnabled: false } : { chipsEnabled: true, chipStyle: v as Settings["chipStyle"] });
         }}>
-          <option value="badge">Badge</option><option value="minimal">Minimal</option><option value="off">Off</option>
+          <option value="badge">Badge</option><option value="minimal">Minimal</option><option value="rail">Rail (colour strip, name on hover)</option><option value="off">Off</option>
         </select></label>
         <label className="row" style={{ marginTop: 10 }}><input type="checkbox" checked={s.showUnknown !== false} onChange={(e) => patch({ showUnknown: e.target.checked })} /> Mark addresses I haven&apos;t tagged</label>
+        <label className="row" style={{ marginTop: 10 }}><input type="checkbox" checked={s.pageBadge !== false} onChange={(e) => patch({ pageBadge: e.target.checked })} /> Show the tagged count on the toolbar icon</label>
+        <p className="muted" style={{ margin: "4px 0 0" }}>Red means a tagged address on the page is marked watchlist or scam. Stays in this browser.</p>
         <label className="f">Theme<select value={s.theme} onChange={(e) => patch({ theme: e.target.value as Settings["theme"] })}>
           <option value="system">Match the page</option><option value="light">Light</option><option value="dark">Dark</option>
         </select></label>
@@ -75,7 +86,7 @@ function App() {
 
       <section className="card">
         <h2 className="section-title">Saving</h2>
-        <p className="muted" style={{ margin: "0 0 4px" }}>New tags are private to you. Pick a shared list in the tag form when you want your team to see one.</p>
+        <p className="muted" style={{ margin: "0 0 4px" }}>New tags are private to you. Link an address to a contact in the tag form, and pick a shared list only when your team should see it.</p>
         <label className="row" style={{ marginTop: 6 }}><input type="checkbox" checked={!s.cloudSync} onChange={(e) => patch({ cloudSync: !e.target.checked })} /> Pause syncing</label>
         <p className="muted" style={{ margin: "4px 0 0" }}>While paused, no addresses are looked up and new tags stay in this browser. They upload when you resume.</p>
         {status.queued > 0 && <p className="muted" style={{ margin: "4px 0 0" }}>{status.queued} tag{status.queued === 1 ? "" : "s"} waiting to sync.</p>}

@@ -26,6 +26,7 @@ async function ensureIndexes(db: Db) {
     // Partial: X and wallet sign-ins have no email.
     db.collection("users").createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } }),
     db.collection("users").createIndex({ "identities.provider": 1, "identities.subject": 1 }),
+    db.collection("users").createIndex({ handle: 1 }, { unique: true, partialFilterExpression: { handle: { $type: "string" } } }),
     db.collection("sessions").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("sessions").createIndex({ userId: 1 }),

@@ -4,26 +4,29 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { CHAIN_IDS, CHAINS, addressError, inferFamily, parsePastedAddress } from "@tagawallet/shared";
+import { CHAIN_IDS, CHAINS, RELATIONSHIPS, addressError, inferFamily, parsePastedAddress, type Relationship } from "@tagawallet/shared";
 import { api, ClientError, fetcher } from "@/lib/client";
-import { Button, ErrorNote, Modal } from "./ui";
+import { Button, ErrorNote, Modal, Select } from "./ui";
 import { LabelPicker, useToast, type Labels } from "./kit";
 
 /**
- * People, projects and plain lists are one idea to the person using the app: a list of wallets.
- * Underneath, a person or project is an entity (it can be verified and published) and a plain list
- * is a list (it can be shared). This module is the only place that knows the difference.
+ * People and projects are who an address belongs to. Plain lists are shared working sets.
+ * This module is the only place that knows the difference under the hood.
  */
 export type Kind = "list" | "person" | "project";
 export type Collection = { kind: Kind; id: string; name: string; count: number; shared: boolean; isPublic: boolean; verified: boolean; canEdit: boolean; href: string; tags: string[]; avatarUrl?: string };
 export type CollectionChoice = { kind: Kind; id?: string; name: string };
 
 export const KINDS: { kind: Kind; label: string; plural: string; hint: string }[] = [
-  { kind: "list", label: "List", plural: "Lists", hint: "Any group of wallets. Can be shared with your team." },
-  { kind: "person", label: "Person", plural: "People", hint: "Wallets one person controls." },
-  { kind: "project", label: "Project", plural: "Projects", hint: "Wallets of a project, company, DAO or exchange." },
+  { kind: "person", label: "Person", plural: "People", hint: "Someone whose wallets you track." },
+  { kind: "project", label: "Project", plural: "Projects", hint: "A project, company, DAO or exchange." },
+  { kind: "list", label: "List", plural: "Lists", hint: "A working set you can share with a team." },
 ];
 export const kindLabel = (k: Kind) => KINDS.find((x) => x.kind === k)!.label;
+
+export const relationshipLabel = (r: string) => ({
+  owner: "Owner", treasury: "Treasury", hot_wallet: "Hot wallet", cold_wallet: "Cold wallet", associated: "Associated", custom: "Custom",
+}[r] ?? r.replace(/_/g, " "));
 
 export function KindIcon({ kind, className = "" }: { kind: Kind; className?: string }) {
   const paths: Record<Kind, ReactNode> = {
@@ -41,7 +44,7 @@ export function useCollections() {
   const all: Collection[] = [
     ...(lists ?? []).map((l) => ({
       kind: "list" as const, id: l.id, name: l.name, count: l.walletCount, shared: l.visibility === "shared" || l.collaboratorCount > 0,
-      isPublic: false, verified: false, canEdit: l.role !== "viewer", href: `/lists/${l.id}`, tags: l.tags ?? [],
+      isPublic: !!l.publishedAt, verified: false, canEdit: l.role !== "viewer", href: `/lists/${l.id}`, tags: l.tags ?? [],
     })),
     ...(entities ?? []).map((e) => ({
       kind: (e.type === "individual" ? "person" : "project") as Kind, id: e.id, name: e.name, count: e.walletCount, shared: false,
@@ -72,23 +75,26 @@ export async function resolveCollection(c: CollectionChoice): Promise<{ kind: Ki
   return c.id ? { kind: c.kind, id: c.id, name: c.name } : createCollection(c.kind, c.name);
 }
 
-export function addToCollection(c: { kind: Kind; id: string }, walletId: string) {
-  return c.kind === "list" ? api(`/api/lists/${c.id}/wallets`, { body: { walletId } }) : api(`/api/entities/${c.id}/wallets`, { body: { walletId } });
+export function addToCollection(c: { kind: Kind; id: string }, walletId: string, relationship: Relationship = "associated") {
+  return c.kind === "list"
+    ? api(`/api/lists/${c.id}/wallets`, { body: { walletId } })
+    : api(`/api/entities/${c.id}/wallets`, { body: { walletId, relationship } });
 }
 export function removeFromCollection(c: { kind: Kind; id: string }, walletId: string) {
   return c.kind === "list" ? api(`/api/lists/${c.id}/wallets?walletId=${walletId}`, { method: "DELETE" }) : api(`/api/entities/${c.id}/wallets/${walletId}`, { method: "DELETE" });
 }
 
 /** Type to find any list, person or project, or create one of any kind from what you typed. */
-export function CollectionPicker({ onSelect, exclude = [], placeholder = "Find or create a list", label = "Add to list", autoFocus }: {
-  onSelect: (c: CollectionChoice) => void; exclude?: string[]; placeholder?: string; label?: string; autoFocus?: boolean;
+export function CollectionPicker({ onSelect, exclude = [], placeholder = "Find or create a list", label = "Add to list", autoFocus, kinds }: {
+  onSelect: (c: CollectionChoice) => void; exclude?: string[]; placeholder?: string; label?: string; autoFocus?: boolean; kinds?: Kind[];
 }) {
   const { all } = useCollections();
+  const allowed = kinds ?? KINDS.map((k) => k.kind);
   const [text, setText] = useState(""), [open, setOpen] = useState(false), [index, setIndex] = useState(0);
   const term = text.trim().toLowerCase();
-  const matches = all.filter((c) => c.canEdit && !exclude.includes(c.id) && (!term || c.name.toLowerCase().includes(term))).slice(0, 7);
-  const exact = all.some((c) => c.name.toLowerCase() === term);
-  const options: CollectionChoice[] = [...matches, ...(term && !exact ? KINDS.map((k) => ({ kind: k.kind, name: text.trim() })) : [])];
+  const matches = all.filter((c) => allowed.includes(c.kind) && c.canEdit && !exclude.includes(c.id) && (!term || c.name.toLowerCase().includes(term))).slice(0, 7);
+  const exact = all.some((c) => allowed.includes(c.kind) && c.name.toLowerCase() === term);
+  const options: CollectionChoice[] = [...matches, ...(term && !exact ? KINDS.filter((k) => allowed.includes(k.kind)).map((k) => ({ kind: k.kind, name: text.trim() })) : [])];
   const pick = (c: CollectionChoice) => { onSelect(c); setText(""); setOpen(false); setIndex(0); };
   return (
     <div className="relative">
@@ -133,17 +139,18 @@ export function CollectionChip({ c, onRemove }: { c: { kind: Kind; name: string;
 
 // ---- Creating things, from anywhere ----
 
-type Creators = { addWallet: (prefill?: { address?: string; into?: CollectionChoice & { id: string } }) => void; newList: (kind?: Kind) => void };
+type Prefill = { address?: string; name?: string; into?: CollectionChoice & { id: string } };
+type Creators = { addWallet: (prefill?: Prefill) => void; newList: (kind?: Kind) => void };
 const CreateContext = createContext<Creators>({ addWallet: () => {}, newList: () => {} });
 export const useCreate = () => useContext(CreateContext);
 
 export function CreateProvider({ children }: { children: ReactNode }) {
-  const [wallet, setWallet] = useState<null | { address?: string; into?: CollectionChoice & { id: string } }>(null);
+  const [wallet, setWallet] = useState<null | Prefill>(null);
   const [list, setList] = useState<null | Kind>(null);
   return (
     <CreateContext.Provider value={{ addWallet: (p) => setWallet(p ?? {}), newList: (k) => setList(k ?? "list") }}>
       {children}
-      <Modal open={!!wallet} onClose={() => setWallet(null)} title="Add a wallet">
+      <Modal variant="drawer" open={!!wallet} onClose={() => setWallet(null)} title="Add a wallet">
         {wallet && <AddWalletForm key={wallet.address ?? ""} prefill={wallet} onDone={() => setWallet(null)} />}
       </Modal>
       <Modal open={!!list} onClose={() => setList(null)} title="New list">
@@ -153,12 +160,14 @@ export function CreateProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function AddWalletForm({ prefill, onDone }: { prefill: { address?: string; into?: CollectionChoice & { id: string } }; onDone: () => void }) {
+function AddWalletForm({ prefill, onDone }: { prefill: Prefill; onDone: () => void }) {
   const { mutate } = useSWRConfig();
   const { toast } = useToast();
+  const identityPrefill = prefill.into && prefill.into.kind !== "list" ? prefill.into : null;
   const [address, setAddress] = useState(prefill.address ?? "");
   const [chain, setChain] = useState("ethereum");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(prefill.name ?? "");
+  const [relationship, setRelationship] = useState<Relationship>("associated");
   const [labels, setLabels] = useState<Labels>({ status: "none", tags: [] });
   const [into, setInto] = useState<CollectionChoice[]>(prefill.into ? [prefill.into] : []);
   const [error, setError] = useState(""), [addrError, setAddrError] = useState(""), [busy, setBusy] = useState(false);
@@ -166,6 +175,7 @@ function AddWalletForm({ prefill, onDone }: { prefill: { address?: string; into?
   const chains = CHAIN_IDS.filter((c) => CHAINS[c].family === family);
   const chosen = chains.includes(chain as never) ? chain : chains[0]!;
   const sharedTo = into.filter((c) => c.kind === "list");
+  const identity = identityPrefill ?? into.find((c) => c.kind !== "list");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setError(""); setAddrError("");
@@ -176,12 +186,21 @@ function AddWalletForm({ prefill, onDone }: { prefill: { address?: string; into?
     }
     setBusy(true);
     try {
-      const w = await api("/api/wallets", { body: { address: parsed.raw, chain: chosen, displayLabel: name, status: labels.status, tags: labels.tags } });
+      const primary = into.find((c) => c.kind !== "list" && c.id);
+      const w = await api("/api/wallets", {
+        body: {
+          address: parsed.raw, chain: chosen, displayLabel: name, status: labels.status, tags: labels.tags,
+          ...(primary?.id ? { entityId: primary.id, relationship } : {}),
+        },
+      });
       // Adding an address you already had updates it, rather than silently keeping the old name.
       if (w.existing && (name || labels.status !== "none" || labels.tags.length)) {
         await api(`/api/wallets/${w.id}`, { method: "PATCH", body: { ...(name ? { displayLabel: name } : {}), ...(labels.status !== "none" ? { status: labels.status } : {}), ...(labels.tags.length ? { tags: [...new Set([...(w.tags ?? []), ...labels.tags])] } : {}) } });
       }
-      for (const c of into) await addToCollection(await resolveCollection(c), w.id);
+      for (const c of into) {
+        if (primary?.id && c.kind !== "list" && c.id === primary.id) continue;
+        await addToCollection(await resolveCollection(c), w.id, c.kind === "list" ? "associated" : relationship);
+      }
       await mutate((k) => typeof k === "string" && k.startsWith("/api/"));
       toast(w.existing ? `You already had that wallet, so it was updated.` : `Added ${name || "the wallet"}.`);
       onDone();
@@ -192,9 +211,10 @@ function AddWalletForm({ prefill, onDone }: { prefill: { address?: string; into?
   }
 
   return (
-    <form className="space-y-4" onSubmit={submit} noValidate>
-      <label className="block space-y-1.5">
-        <span className="text-sm font-medium">Address</span>
+    <form className="flex min-h-0 flex-1 flex-col" onSubmit={submit} noValidate>
+      <div className="scroll-fade-y flex-1 space-y-6 overflow-y-auto px-4 pt-2 pb-5">
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted">Address</span>
         <input autoFocus={!prefill.address} aria-label="Address" aria-invalid={!!addrError} value={address} onChange={(e) => { setAddress(e.target.value); setAddrError(""); }}
           placeholder="0x…, Solana or Bitcoin address" spellCheck={false} autoComplete="off"
           className="addr w-full rounded-md border border-line bg-card px-3 py-2 text-sm aria-invalid:border-bad" />
@@ -207,29 +227,45 @@ function AddWalletForm({ prefill, onDone }: { prefill: { address?: string; into?
           </span>
         )}
       </label>
-      <label className="block space-y-1.5">
-        <span className="text-sm font-medium">Name</span>
-        <input autoFocus={!!prefill.address} aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Alice's trading wallet" className="w-full rounded-md border border-line bg-card px-3 py-2 text-sm" />
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted">{identity ? "Name for this address" : "Name"}</span>
+        <input autoFocus={!!prefill.address} aria-label={identity ? "Name for this address" : "Name"} value={name} onChange={(e) => setName(e.target.value)}
+          placeholder={identity ? "Hot wallet, treasury…" : "Alice's trading wallet"} className="w-full rounded-md border border-line bg-card px-3 py-2 text-sm" />
+        {identity && <span className="block text-xs text-muted">How this address relates to {identity.name}. The contact already has a name.</span>}
       </label>
-      <div className="space-y-1.5">
-        <span className="text-sm font-medium">Labels <span className="font-normal text-muted">· optional</span></span>
+      {identity && (
+        <label className="block space-y-1">
+          <span className="text-xs font-medium text-muted">Role</span>
+          <Select aria-label="Role" value={relationship} onChange={(e) => setRelationship(e.target.value as Relationship)}>
+            {RELATIONSHIPS.map((r) => <option key={r} value={r}>{relationshipLabel(r)}</option>)}
+          </Select>
+        </label>
+      )}
+      <div className="space-y-2">
+        <span className="text-xs font-medium text-muted">Labels <span className="font-normal text-muted">· optional</span></span>
         <LabelPicker value={labels} onChange={setLabels} />
       </div>
-      <div className="space-y-1.5">
-        <span className="text-sm font-medium">Lists <span className="font-normal text-muted">· optional</span></span>
+      <div className="space-y-2">
+        <span className="text-xs font-medium text-muted">{identityPrefill ? "Also add to" : "Belongs to"} <span>· optional</span></span>
         {into.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {into.map((c, i) => <CollectionChip key={`${c.kind}-${c.id ?? c.name}`} c={c} onRemove={() => setInto(into.filter((_, j) => j !== i))} />)}
+            {into.map((c, i) => <CollectionChip key={`${c.kind}-${c.id ?? c.name}`} c={c} onRemove={identityPrefill && c.id === identityPrefill.id ? undefined : () => setInto(into.filter((_, j) => j !== i))} />)}
           </div>
         )}
-        <CollectionPicker placeholder="Add to a list, person or project" exclude={into.map((c) => c.id).filter(Boolean) as string[]} onSelect={(c) => setInto([...into, c])} />
-        <p className="text-xs text-muted">{sharedTo.length ? "People on shared lists will see its name, labels and notes." : "Private to you. A wallet doesn't have to be in a list."}</p>
+        <CollectionPicker
+          label={identityPrefill ? "Also add to" : "Belongs to"}
+          placeholder="Contact or shared list"
+          exclude={into.map((c) => c.id).filter(Boolean) as string[]}
+          onSelect={(c) => setInto([...into, c])}
+        />
+        <p className="text-xs text-muted">{sharedTo.length ? "People on shared lists will see its name, labels and notes." : "Private to you. Link it to someone, file it in a list, or leave it as a one-off name."}</p>
       </div>
       <ErrorNote>{error}</ErrorNote>
-      <div className="flex gap-2">
-        <Button type="submit" variant="primary" disabled={busy || !address.trim()}>{busy ? "Adding…" : "Add wallet"}</Button>
-        <Button onClick={onDone}>Cancel</Button>
       </div>
+      <footer className="flex min-h-14 items-center gap-2 bg-wash/50 px-4 py-2">
+        <Button type="submit" variant="primary" disabled={busy || !address.trim()}>{busy ? "Adding…" : identityPrefill ? "Add address" : "Add wallet"}</Button>
+        <Button onClick={onDone}>Cancel</Button>
+      </footer>
     </form>
   );
 }

@@ -4,11 +4,11 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { CHAIN_IDS, CHAINS, chainFamily, inferFamily, type ChainId } from "@tagawallet/shared";
+import { CHAIN_IDS, CHAINS, RELATIONSHIPS, chainFamily, inferFamily, type ChainId, type Relationship } from "@tagawallet/shared";
 import { api, ClientError, fetcher } from "@/lib/client";
-import { Address, Button, ChainName, ErrorNote, Input, Select, VerificationPill } from "./ui";
+import { Address, Button, ChainName, ErrorNote, Input, Select } from "./ui";
 import { AutoField, LabelPicker, useToast } from "./kit";
-import { addToCollection, CollectionChip, collectionsOf, CollectionPicker, removeFromCollection, resolveCollection } from "./collections";
+import { addToCollection, CollectionChip, collectionsOf, CollectionPicker, relationshipLabel, removeFromCollection, resolveCollection } from "./collections";
 import { LinkEditor, type LinkRow } from "./link-editor";
 
 /** Wallets open in a drawer over whatever page you're on, addressed by ?w= so links and Back work. */
@@ -79,7 +79,9 @@ function WalletPanel({ id, onClose }: { id: string; onClose: () => void }) {
 
         {w.own && <ChangeAddress wallet={w} onSaved={async (next) => { await mutate(next, { revalidate: false }); void refreshAll(mutateAll); }} />}
 
-        <AutoField label="Name" value={w.displayLabel} placeholder="Alice's trading wallet" onSave={(displayLabel) => patch({ displayLabel })} className="text-base font-medium" />
+        <BelongsTo wallet={w} walletId={id} onChange={() => run(async () => {})} />
+
+        <AutoField label="Name" value={w.displayLabel} placeholder="Hot wallet, trading, treasury…" onSave={(displayLabel) => patch({ displayLabel })} className="text-base font-medium" />
 
         <div className="space-y-1.5 px-2">
           <span className="text-xs font-medium text-muted">Labels</span>
@@ -89,22 +91,22 @@ function WalletPanel({ id, onClose }: { id: string; onClose: () => void }) {
         <AutoField label="Notes" multiline value={w.notes ?? ""} placeholder="Where you saw it, who told you, anything worth remembering" onSave={(notes) => patch({ notes })} />
 
         <section className="space-y-2 px-2">
-          <h3 className="text-xs font-medium text-muted">Lists</h3>
-          {collectionsOf(w).length > 0 ? (
+          <h3 className="text-xs font-medium text-muted">Shared lists</h3>
+          {collectionsOf(w).filter((c) => c.kind === "list").length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
-              {collectionsOf(w).map((c) => (
+              {collectionsOf(w).filter((c) => c.kind === "list").map((c) => (
                 <CollectionChip key={`${c.kind}-${c.id}`} c={c} onRemove={c.canEdit ? () => run(() => removeFromCollection(c, id)) : undefined} />
               ))}
             </div>
-          ) : <p className="text-sm text-muted">Not in any list. That&apos;s fine: it&apos;s saved and private to you.</p>}
-          <CollectionPicker placeholder="Add to a list, person or project" exclude={collectionsOf(w).map((c) => c.id)}
+          ) : <p className="text-sm text-muted">Not in a shared list.</p>}
+          <CollectionPicker placeholder="Add to a shared list" kinds={["list"]} exclude={collectionsOf(w).map((c) => c.id)}
             onSelect={(c) => run(async () => addToCollection(await resolveCollection(c), id))} />
           {w.lists.some((l: any) => l.visibility === "shared") && <p className="text-xs text-muted">People on shared lists see this wallet&apos;s name, labels and notes.</p>}
         </section>
 
         <details className="group px-2">
           <summary className="cursor-pointer list-none text-xs font-medium text-muted hover:text-ink">Links {links.length ? `(${links.length})` : ""} <span className="group-open:hidden">▸</span><span className="hidden group-open:inline">▾</span></summary>
-          <p className="mt-1 mb-2 text-xs text-muted">Official links usually belong on the person or project. Use these for one-off sources.</p>
+          <p className="mt-1 mb-2 text-xs text-muted">Official links usually belong on the contact. Use these for one-off sources.</p>
           <LinkEditor value={links} onChange={setLinks} defaultStatus="source" onCommit={(next) => void patch({ links: next.filter((l) => l.url.trim()) }).catch(() => {})} />
         </details>
 
@@ -124,8 +126,49 @@ function WalletPanel({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
+/** Who this address belongs to, with a role. Lists stay separate below. */
+function BelongsTo({ wallet, walletId, onChange }: { wallet: any; walletId: string; onChange: () => void }) {
+  const identities = collectionsOf(wallet).filter((c) => c.kind !== "list");
+  const primary = identities[0];
+  const link = (wallet.entities ?? []).find((e: any) => e.id === primary?.id || e._id === primary?.id);
+  const role = (link?.relationship ?? "associated") as Relationship;
+  const setRole = async (relationship: Relationship) => {
+    if (!primary) return;
+    await api(`/api/entities/${primary.id}/wallets`, { body: { walletId, relationship, visibility: link?.linkVisibility ?? "private" } });
+    onChange();
+  };
+  return (
+    <section className="space-y-2 px-2">
+      <h3 className="text-xs font-medium text-muted">Belongs to</h3>
+      {identities.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            {identities.map((c) => (
+              <CollectionChip key={`${c.kind}-${c.id}`} c={c} onRemove={c.canEdit ? () => { void removeFromCollection(c, walletId).then(onChange); } : undefined} />
+            ))}
+          </div>
+          {primary && wallet.own && (
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted">Role</span>
+              <Select aria-label="Role" className="w-auto" value={role} onChange={(e) => void setRole(e.target.value as Relationship)}>
+                {RELATIONSHIPS.map((r) => <option key={r} value={r}>{relationshipLabel(r)}</option>)}
+              </Select>
+            </label>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-muted">Not on a contact. Fine if it already lives in a list, or as a one-off name.</p>
+      )}
+      {wallet.own && (
+        <CollectionPicker placeholder="Link to a contact" kinds={["person", "project"]} exclude={identities.map((c) => c.id)}
+          onSelect={(c) => { void resolveCollection(c).then((target) => addToCollection(target, walletId)).then(onChange); }} />
+      )}
+    </section>
+  );
+}
+
 /** Fixes a typo'd address or the wrong chain in place, keeping the name, notes and lists. */
-function ChangeAddress({ wallet, onSaved }: { wallet: any; onSaved: (next: any) => Promise<void> }) {
+export function ChangeAddress({ wallet, onSaved }: { wallet: any; onSaved: (next: any) => Promise<void> }) {
   const openWallet = useOpenWallet();
   const [open, setOpen] = useState(false);
   const [address, setAddress] = useState(wallet.address), [chain, setChain] = useState<string>(wallet.chain);

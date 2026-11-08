@@ -11,9 +11,6 @@ export const POST = route<{ id: string }>(async ({ user, params, body }) => {
   const prior = await db.collection("wallet_entity_links").findOne({ walletId: wallet._id, entityId: entity._id });
   if (input.visibility === "public") {
     if (!own) throw new ApiError(403, "You can only make your own wallet records public.");
-    if (entity.type === "individual" && !prior?.evidence?.some((e: { verifiedAt?: Date }) => e.verifiedAt)) {
-      throw new ApiError(422, "Linking a wallet publicly to an individual needs a wallet signature as proof.");
-    }
   }
   const now = new Date();
   await db.collection("wallet_entity_links").updateOne(

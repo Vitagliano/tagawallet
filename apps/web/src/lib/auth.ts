@@ -71,6 +71,11 @@ export function publicUser(u: User) {
     isAdmin: !!u.email && !!u.emailVerifiedAt && admins.includes(u.email), restricted: !!u.restrictedAt,
     emailVerified: !u.email || !!u.emailVerifiedAt,
     onboardingDismissed: !!u.onboardingDismissed,
+    // The public profile: tagawallet.com/u/<handle>, shown only while profilePublic is on.
+    handle: (u.handle ?? null) as string | null, bio: (u.bio ?? "") as string, profilePublic: !!u.profilePublic,
+    walletOpen: (["peek", "inline", "page"].includes(u.walletOpen) ? u.walletOpen : "peek") as "peek" | "inline" | "page",
+    theme: (["system", "light", "dark"].includes(u.theme) ? u.theme : "system") as "system" | "light" | "dark",
+    themeScope: (["both", "web", "extension"].includes(u.themeScope) ? u.themeScope : "both") as "both" | "web" | "extension",
     // Wallet subjects are addresses the person proved they control, so they're safe to show back to them.
     identities: ((u.identities ?? []) as { provider: string; subject: string }[]).map((i) => ({ provider: i.provider, address: i.provider === "wallet" ? i.subject : null })),
     createdAt: u.createdAt ?? null,

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** People and projects now live with lists. */
+/** Contacts are the home page. */
 export default function People() {
-  redirect("/lists");
+  redirect("/dashboard");
 }

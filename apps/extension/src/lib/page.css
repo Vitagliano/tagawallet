@@ -37,3 +37,7 @@ button.small { min-height: 26px; padding: 0 9px; flex: none; font-size: 12px; }
 .section-title { margin: 0 0 4px; font-size: 15px; }
 .list-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
 .list-row:first-child { border-top: 0; }
+/* Anything the user can click gets the pointer cursor; disabled controls stay default. */
+a[href], summary, select, input[type=checkbox], input[type=radio], input[type=range], input[type=file], [role=button], [role=tab], [role=menuitem], [role=option], [role=switch] { cursor: pointer; }
+button:not(:disabled), input[type=button]:not(:disabled), input[type=submit]:not(:disabled) { cursor: pointer; }
+button:disabled, input:disabled, select:disabled, [role=button][aria-disabled=true] { cursor: default; }

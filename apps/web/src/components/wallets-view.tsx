@@ -11,14 +11,21 @@ import { refreshAll, useOpenWallet } from "./wallet-drawer";
 import { addToCollection, collectionsOf, CollectionPicker, KindIcon, removeFromCollection, resolveCollection, useCollections, useCreate, type Kind } from "./collections";
 import { ImportDialog } from "./import-dialog";
 
-type Filters = { status: string; tag: string; chain: string; within: string };
-const NO_FILTERS: Filters = { status: "", tag: "", chain: "", within: "" };
+type Filters = { status: string; tag: string; chain: string; within: string; unfiled: boolean };
+const NO_FILTERS: Filters = { status: "", tag: "", chain: "", within: "", unfiled: false };
+const isUnfiledParam = (p: URLSearchParams) => p.get("unfiled") === "1" || p.get("unfiled") === "true"
+  || p.get("unlinked") === "1" || p.get("unlinked") === "true";
 
 /**
- * Wallets, everywhere they're shown: the home page (all of them) and inside a list, person or project.
+ * Wallets, everywhere they're shown: the wallet book and inside a shared list.
  * Search only finds. Adding is always the "Add wallet" button, so the two never get confused.
  */
-export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { kind: Kind; id: string; name: string }; canEdit?: boolean; emptyHint?: React.ReactNode }) {
+export function WalletsView({ scope, canEdit = true, emptyHint, placeholder, above }: {
+  scope?: { kind: Kind; id: string; name: string }; canEdit?: boolean; emptyHint?: React.ReactNode;
+  placeholder?: string;
+  /** Rendered under the search bar with the current search text, so a page can show its own matches above the wallets. */
+  above?: (search: string) => React.ReactNode;
+}) {
   const params = useSearchParams();
   const openWallet = useOpenWallet();
   const { mutate } = useSWRConfig();
@@ -27,12 +34,18 @@ export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { ki
   const { all: collections } = useCollections();
   const [q, setQ] = useState(params.get("q") ?? "");
   const [debounced, setDebounced] = useState(q);
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filters, setFilters] = useState<Filters>(() => ({
+    ...NO_FILTERS,
+    unfiled: isUnfiledParam(params),
+  }));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   useEffect(() => { const t = setTimeout(() => setDebounced(q), 150); return () => clearTimeout(t); }, [q]);
   useEffect(() => { const v = params.get("q"); if (v) setQ(v); }, [params]);
+  useEffect(() => {
+    if (isUnfiledParam(params)) setFilters((f) => (f.unfiled ? f : { ...f, unfiled: true }));
+  }, [params]);
   // Old links that used the bar to add an address now open the Add wallet dialog.
   useEffect(() => { const a = params.get("add"); if (a) addWallet({ address: a }); }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -47,6 +60,7 @@ export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { ki
   const within = scope ?? (filters.within ? { kind: filters.within.split(":")[0] as Kind, id: filters.within.split(":")[1]! } : null);
   if (within) query.set(within.kind === "list" ? "list" : "entity", within.id);
   for (const k of ["status", "tag", "chain"] as const) if (filters[k]) query.set(k, filters[k]);
+  if (filters.unfiled && !scope) query.set("unfiled", "1");
   const { data, isLoading } = useSWR<{ wallets: any[]; more: boolean }>(`/api/wallets?${query}`, fetcher, { keepPreviousData: true });
 
   const wallets = useMemo(() => (data?.wallets ?? []).filter((w) => !hidden.has(w.id)), [data, hidden]);
@@ -94,7 +108,7 @@ export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { ki
           <span aria-hidden className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted">⌕</span>
           <input
             type="search" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search wallets"
-            placeholder={scope ? `Search ${scope.name}` : "Search by name, label, note or address"}
+            placeholder={placeholder ?? (scope ? `Search ${scope.name}` : "Search by name, label, note or address")}
             className="h-10 w-full rounded-xl border border-transparent bg-card pr-3 pl-9 text-sm placeholder:text-muted/70 focus:border-accent"
           />
         </div>
@@ -119,6 +133,8 @@ export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { ki
         </div>
       )}
 
+      {above?.(isAddress ? "" : debounced.trim())}
+
       <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Filters">
         {QUICK_STATUSES.map((st) => (
           <FilterChip key={st.value} on={filters.status === st.value} onClick={() => set({ status: filters.status === st.value ? "" : st.value, tag: "" })}>
@@ -130,7 +146,12 @@ export function WalletsView({ scope, canEdit = true, emptyHint }: { scope?: { ki
         ))}
         {customLabels.length > 5 && <FilterSelect label="More labels" value={customLabels.slice(0, 5).includes(filters.tag) ? "" : filters.tag} onChange={(tag) => set({ tag, status: "" })} options={customLabels.slice(5).map((t) => [t, t])} />}
         <span className="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden />
-        {!scope && <FilterSelect label="List" value={filters.within} onChange={(v) => set({ within: v })} options={collections.map((c) => [`${c.kind}:${c.id}`, c.name])} />}
+        {!scope && (
+          <FilterChip on={filters.unfiled} onClick={() => set({ unfiled: !filters.unfiled, within: "" })}>
+            Unfiled
+          </FilterChip>
+        )}
+        {!scope && <FilterSelect label="List" value={filters.within} onChange={(v) => set({ within: v, unfiled: false })} options={collections.map((c) => [`${c.kind}:${c.id}`, c.name])} />}
         <FilterSelect label="Chain" value={filters.chain} onChange={(chain) => set({ chain })} options={CHAIN_IDS.map((c) => [c, CHAINS[c].name])} />
         {Object.values(filters).some(Boolean) && <button className="px-2 text-xs text-muted hover:text-ink hover:underline" onClick={() => set(NO_FILTERS)}>Clear filters</button>}
       </div>

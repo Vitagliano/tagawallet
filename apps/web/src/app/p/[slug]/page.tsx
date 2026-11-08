@@ -18,7 +18,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 const STATUS = {
   verified: { label: "✓ Verified", cls: "bg-good/15 text-good", text: "The owner proved control of the channels listed below." },
-  self_claimed: { label: "Self-claimed", cls: "bg-warn/15 text-warn", text: "The owner says this is theirs. TagAWallet has not confirmed it." },
+  community: { label: "Published", cls: "bg-wash text-muted", text: "These are the publisher's names for these wallets, not a claim of ownership. TagAWallet hasn't checked them." },
 };
 const PROOF: Record<string, string> = { x_post: "X post", dns: "DNS record", meta: "website tag", ens: "ENS record" };
 
@@ -26,7 +26,7 @@ export default async function Profile({ params }: Props) {
   const p = await publicProfile((await params).slug);
   if (!p) notFound();
   void track("public_profile_view");
-  const status = STATUS[p.verification as keyof typeof STATUS] ?? STATUS.self_claimed;
+  const status = STATUS[p.verification as keyof typeof STATUS] ?? STATUS.community;
   return (
     <div className="mx-auto w-full max-w-2xl px-4 py-8">
       <Link href="/"><Logo /></Link>
@@ -37,7 +37,7 @@ export default async function Profile({ params }: Props) {
             <h1 className="text-3xl font-semibold tracking-tight">{p.name}</h1>
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.cls}`}>{status.label}</span>
           </div>
-          <p className="mt-1 text-sm capitalize text-muted">{p.type}</p>
+          <p className="mt-1 text-sm text-muted"><span className="capitalize">{p.type}</span> · published by {p.publishedBy.handle ? <Link className="underline-offset-2 hover:underline" href={`/u/${p.publishedBy.handle}`}>{p.publishedBy.name}</Link> : p.publishedBy.name}</p>
         </div>
       </header>
       {p.description && <p className="mt-4 whitespace-pre-wrap">{p.description}</p>}
@@ -67,8 +67,8 @@ export default async function Profile({ params }: Props) {
             {p.wallets.map((w) => (
               <li key={`${w.chain}:${w.address}`} className="px-4 py-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <a className="addr underline" title={w.address} href={CHAINS[w.chain as ChainId].explorer + w.address} rel="noreferrer noopener nofollow" target="_blank">{truncateAddress(w.address, 10, 8)}</a>
-                  <span className="text-xs text-muted">{CHAINS[w.chain as ChainId].name} · {w.relationship.replace("_", " ")}</span>
+                  <Link className="addr underline" title={`Who else claims ${w.address}`} href={`/a/${encodeURIComponent(w.address)}`}>{truncateAddress(w.address, 10, 8)}</Link>
+                  <span className="text-xs text-muted">{CHAINS[w.chain as ChainId].name} · {w.relationship.replace("_", " ")} · <a className="underline-offset-2 hover:underline" href={CHAINS[w.chain as ChainId].explorer + w.address} rel="noreferrer noopener nofollow" target="_blank">Explorer ↗</a></span>
                 </div>
                 <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-muted">
                   <span>Source: {w.source}</span>
