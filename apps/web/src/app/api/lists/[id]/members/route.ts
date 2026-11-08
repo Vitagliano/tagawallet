@@ -4,15 +4,17 @@ import { getList, logActivity, trackFirst } from "@/lib/access";
 import { randomToken, sha256 } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { appUrl, sendEmail } from "@/lib/email";
+import { requireVerifiedEmail } from "@/lib/email-verification";
 
 /** Creates an invitation: bound to an email when given, otherwise a shareable link. */
 export const POST = route<{ id: string }>(async ({ user, params, body }) => {
   const { email, role } = await body(inviteSchema);
+  if (email) requireVerifiedEmail(user, "sending invitations by email");
   const { list } = await getList(params.id, user._id, "admin");
   const db = await getDb();
   const token = randomToken();
   await db.collection("tokens").insertOne({
-    kind: "list_invite", tokenHash: sha256(token), listId: list._id, role, email: email ?? null, invitedBy: user._id,
+    kind: "list_invite", tokenHash: sha256(token), listId: list._id, role, email: email ?? null, invitedBy: user._id, createdAt: new Date(),
     expiresAt: new Date(Date.now() + 14 * 864e5),
   });
   await db.collection("lists").updateOne({ _id: list._id, visibility: "private" }, { $set: { visibility: "shared" } });

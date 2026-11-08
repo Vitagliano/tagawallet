@@ -70,7 +70,10 @@ export default async function Profile({ params }: Props) {
                   <a className="addr underline" title={w.address} href={CHAINS[w.chain as ChainId].explorer + w.address} rel="noreferrer noopener nofollow" target="_blank">{truncateAddress(w.address, 10, 8)}</a>
                   <span className="text-xs text-muted">{CHAINS[w.chain as ChainId].name} · {w.relationship.replace("_", " ")}</span>
                 </div>
-                <p className="mt-0.5 text-xs text-muted">Source: {w.source}</p>
+                <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-muted">
+                  <span>Source: {w.source}</span>
+                  <ReportButton entityId={p.id} slug={p.slug} link={{ id: w.linkId, address: w.address }} />
+                </div>
               </li>
             ))}
           </ul>

@@ -4,6 +4,7 @@ import { ApiError, publicRoute } from "@/lib/api";
 import { createSession, createUser, hashPassword, publicUser, sessionCookie } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { track } from "@/lib/access";
+import { sendVerificationEmail } from "@/lib/email-verification";
 
 export const POST = publicRoute(async ({ body }) => {
   const input = await body(registerSchema);
@@ -15,6 +16,7 @@ export const POST = publicRoute(async ({ body }) => {
     email: input.email, passwordHash: await hashPassword(input.password), displayName: input.displayName, provider: "password",
   });
   await track("account_created", user._id);
+  await sendVerificationEmail(user).catch((err) => console.error("Couldn't send the verification email", err));
   const { token, maxAge } = await createSession(user._id);
   const res = NextResponse.json({ user: publicUser(user) }, { status: 201 });
   res.headers.append("Set-Cookie", sessionCookie(token, maxAge));

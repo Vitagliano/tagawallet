@@ -2,6 +2,7 @@ import type { ObjectId, Document } from "mongodb";
 import { chainFamily, provenanceText, sortLabels, type ChainId, type ResolvedLabel, type ResolveResult } from "@tagawallet/shared";
 import { getDb } from "./db";
 import { collaboratorListIds } from "./access";
+import { ensAddresses } from "./ens";
 
 type Query = { normalized: string; kind: string };
 
@@ -100,7 +101,7 @@ export async function resolveAddresses(queries: Query[], viewerId: ObjectId | nu
         const source = entity.verification?.status === "verified" ? "verified" : "self_claimed";
         out.get(record.normalizedAddress)!.push({
           source, provenance: provenanceText(source), label: entity.name, chain: record.chain, tags: entity.tags ?? [],
-          shared: false, links: (entity.links ?? []).map(linkView), entity: entityInfo(entity, counts),
+          shared: false, links: (entity.links ?? []).map(linkView), entity: entityInfo(entity, counts), linkId: link._id.toString(),
         });
       }
     }
@@ -121,5 +122,17 @@ export async function resolveAddresses(queries: Query[], viewerId: ObjectId | nu
       }
     }
   }
-  return [...out].map(([normalized, labels]) => ({ normalized, labels: sortLabels(labels) }));
+  // 4: names resolved on-chain pick up the labels of the address behind them.
+  const resolved = await ensAddresses(names);
+  if (resolved.size) {
+    const behind = await resolveAddresses([...new Set(resolved.values())].map((a) => ({ normalized: a.toLowerCase(), kind: "evm" })), viewerId);
+    const byAddress = new Map(behind.map((r) => [r.normalized, r.labels]));
+    for (const [name, address] of resolved) {
+      const have = out.get(name)!;
+      for (const l of byAddress.get(address.toLowerCase()) ?? []) {
+        if (!have.some((h) => (h.walletId && h.walletId === l.walletId) || (h.entity && h.entity.id === l.entity?.id && h.source === l.source))) have.push(l);
+      }
+    }
+  }
+  return [...out].map(([normalized, labels]) => ({ normalized, labels: sortLabels(labels), ...(resolved.has(normalized) ? { address: resolved.get(normalized) } : {}) }));
 }

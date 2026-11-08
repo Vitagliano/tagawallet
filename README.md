@@ -35,7 +35,9 @@ pnpm test:e2e
 
 - **Web:** deploy `apps/web` with `MONGODB_URI`, `APP_URL` and `ADMIN_EMAILS` set, plus the optional keys in `.env.example`.
 - **Extension:** `TAW_RELEASE=1 pnpm --filter @tagawallet/extension build` targets `https://tagawallet.com`. Use `TAW_API_BASE` for any other host. It must match `APP_URL`.
-- **Supported sites:** served from `GET /api/extension/sites`. Admins can change the list with `PUT`, without a new extension release.
+- **Supported sites:** served from `GET /api/extension/sites`. Admins edit the list at `/admin/sites` (or `PUT`, and `DELETE` to reset), without a new extension release.
+- **API:** people create read-only keys in Settings › API keys and call `/api/v1/*`. Docs are at `/docs/api`.
+- **Email verification:** new signups confirm their address before publishing, inviting by email or acting as an admin. Accounts created before this change are treated as verified.
 
 ## Decisions on the PRD's open questions
 

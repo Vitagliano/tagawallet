@@ -67,8 +67,13 @@ export function publicUser(u: User) {
     id: u._id.toString(), email: u.email ?? null, displayName: u.displayName, plan: u.plan ?? "free",
     authProviders: u.authProviders ?? [], hasPassword: !!u.passwordHash,
     emailPrefs: u.emailPrefs ?? { product: true, moderation: true },
-    isAdmin: !!u.email && admins.includes(u.email), restricted: !!u.restrictedAt,
+    // Admin needs a confirmed address, so registering with an admin's email grants nothing.
+    isAdmin: !!u.email && !!u.emailVerifiedAt && admins.includes(u.email), restricted: !!u.restrictedAt,
+    emailVerified: !u.email || !!u.emailVerifiedAt,
     onboardingDismissed: !!u.onboardingDismissed,
+    // Wallet subjects are addresses the person proved they control, so they're safe to show back to them.
+    identities: ((u.identities ?? []) as { provider: string; subject: string }[]).map((i) => ({ provider: i.provider, address: i.provider === "wallet" ? i.subject : null })),
+    createdAt: u.createdAt ?? null,
   };
 }
 
@@ -78,6 +83,8 @@ export function isAdmin(u: User) {
 
 export async function createUser(fields: {
   email?: string | null; passwordHash?: string | null; displayName: string; provider: string; subject?: string;
+  /** True only when a provider vouched for the address. A typed-in email starts unverified. */
+  emailVerified?: boolean;
 }): Promise<User> {
   const db = await getDb();
   const now = new Date();
@@ -86,9 +93,13 @@ export async function createUser(fields: {
     identities: fields.subject ? [{ provider: fields.provider, subject: fields.subject }] : [],
     plan: "free", emailPrefs: { product: true, moderation: true }, createdAt: now, updatedAt: now, deletedAt: null,
   };
-  if (fields.email) doc.email = fields.email;
+  if (fields.email) { doc.email = fields.email; doc.emailVerifiedAt = fields.emailVerified ? now : null; }
   const { insertedId } = await db.collection("users").insertOne(doc);
   return { ...doc, _id: insertedId } as User;
+}
+
+export class IdentityTakenError extends Error {
+  constructor() { super("That sign-in is already linked to a different TagAWallet account."); }
 }
 
 /** Finds the account for an external identity, linking by verified email or to the signed-in user. */
@@ -98,14 +109,23 @@ export async function loginWithIdentity(p: {
   const db = await getDb();
   const users = db.collection("users");
   const bound = await users.findOne({ identities: { $elemMatch: { provider: p.provider, subject: p.subject } }, deletedAt: null });
+  // Linking from a signed-in account must never quietly switch to whoever owns that identity.
+  if (bound && p.current && !bound._id.equals(p.current._id)) throw new IdentityTakenError();
   if (bound) return bound;
-  const target = p.current ?? (p.email && p.emailVerified ? await users.findOne({ email: p.email, deletedAt: null }) : null);
+  // Auto-linking by email needs both sides verified. Otherwise anyone could sign up with someone else's
+  // address and wait for them to arrive through Google, then share their account.
+  const target = p.current ?? (p.email && p.emailVerified ? await users.findOne({ email: p.email, emailVerifiedAt: { $ne: null }, deletedAt: null }) : null);
   if (target) {
     await users.updateOne({ _id: target._id }, {
       $addToSet: { authProviders: p.provider, identities: { provider: p.provider, subject: p.subject } },
-      $set: { updatedAt: new Date() },
+      // Linking a provider that vouches for this same address confirms it too.
+      $set: { updatedAt: new Date(), ...(p.emailVerified && p.email && p.email === target.email && !target.emailVerifiedAt ? { emailVerifiedAt: new Date() } : {}) },
     });
     return target;
   }
-  return createUser({ email: p.emailVerified ? p.email : null, displayName: p.displayName, provider: p.provider, subject: p.subject });
+  if (p.email && p.emailVerified) {
+    // Whoever proves the address owns it. An account that only typed it in, and never confirmed it, gives it up.
+    await users.updateOne({ email: p.email, emailVerifiedAt: null, deletedAt: null }, { $unset: { email: "" }, $set: { updatedAt: new Date() } });
+  }
+  return createUser({ email: p.emailVerified ? p.email : null, emailVerified: !!p.emailVerified, displayName: p.displayName, provider: p.provider, subject: p.subject });
 }
