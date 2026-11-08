@@ -4,6 +4,7 @@ import { chainFromLocation, send, QUICK_STATUSES, type Bootstrap, type ResolvedL
 /**
  * The one quick-tag form, used by the in-page card and the toolbar popup alike.
  * Plain DOM so the content script stays small and can render it inside a shadow root.
+ * Asks who first; the name is this address's role label.
  */
 
 export const TAG_FORM_CSS = `
@@ -36,6 +37,14 @@ export const TAG_FORM_CSS = `
 `;
 
 const TONES: Record<string, string> = { mine: "var(--accent)", trusted: "var(--good)", watchlist: "var(--warn)", scam: "var(--bad)" };
+const ROLES: [string, string][] = [
+  ["associated", "Associated"],
+  ["owner", "Owner"],
+  ["treasury", "Treasury"],
+  ["hot_wallet", "Hot wallet"],
+  ["cold_wallet", "Cold wallet"],
+  ["custom", "Custom"],
+];
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...children: (Node | string | null | undefined | false)[]): HTMLElementTagNameMap[K] {
   const e = Object.assign(document.createElement(tag), props) as HTMLElementTagNameMap[K];
@@ -62,7 +71,6 @@ export function buildTagForm(o: TagFormOptions): HTMLFormElement {
   const layout = () => o.onLayout?.();
   const pasting = !o.address;
 
-  // Address and chain. EVM addresses are the same on every EVM chain, so the chain is a quiet secondary choice.
   const address = h("input", { value: o.address, className: "addr", spellcheck: false, autocomplete: "off", placeholder: "0x…, Solana or Bitcoin address" });
   address.setAttribute("aria-label", "Address");
   const chain = h("select", { className: "mini" });
@@ -80,10 +88,39 @@ export function buildTagForm(o: TagFormOptions): HTMLFormElement {
     if (parsed && (parsed.kind === "evm" || parsed.kind === "solana" || parsed.kind === "bitcoin")) fillChains(parsed.kind);
   });
 
-  const name = h("input", { value: mine?.label ?? "", placeholder: "Alice's trading wallet", maxLength: 120 });
-  name.setAttribute("aria-label", "Name");
+  // Who is this? People and projects first. Creating a new one is explicit.
+  const lists = o.boot?.lists ?? [];
+  const entities = o.boot?.entities ?? [];
+  const who = h("select");
+  who.setAttribute("aria-label", "Who is this");
+  const group = (label: string, items: { value: string; text: string }[]) =>
+    items.length ? h("optgroup", { label }, ...items.map((i) => h("option", { value: i.value, textContent: i.text }))) : null;
+  who.append(
+    h("option", { value: "", textContent: "Not linked yet" }),
+    ...[
+      group("People", entities.filter((e) => e.type === "individual").map((e) => ({ value: `e:${e.id}`, text: e.name }))),
+      group("Projects", entities.filter((e) => e.type !== "individual").map((e) => ({ value: `e:${e.id}`, text: e.name }))),
+    ].filter((g): g is HTMLOptGroupElement => !!g),
+    h("option", { value: "__person", textContent: "New person…" }),
+    h("option", { value: "__project", textContent: "New project…" }),
+  );
+  if (mine?.entity && entities.some((e) => e.id === mine.entity!.id)) who.value = `e:${mine.entity.id}`;
 
-  // Labels: the four built-ins are one tap (stored as status), your own go in a text field (stored as tags).
+  const newWho = h("input", { placeholder: "Name", maxLength: 120, hidden: true });
+  newWho.setAttribute("aria-label", "New person or project name");
+
+  const role = h("select");
+  role.setAttribute("aria-label", "Role");
+  role.append(...ROLES.map(([v, l]) => h("option", { value: v, textContent: l })));
+  role.value = mine?.entity?.relationship && ROLES.some(([v]) => v === mine.entity!.relationship) ? mine.entity.relationship! : "associated";
+
+  const name = h("input", {
+    value: mine?.label ?? "",
+    placeholder: "Hot wallet, treasury…",
+    maxLength: 120,
+  });
+  name.setAttribute("aria-label", "Name for this address");
+
   let status = mine?.status && mine.status !== "none" ? mine.status : "none";
   const chips = h("div", { className: "chips" });
   const paint = () => chips.querySelectorAll<HTMLButtonElement>(".chip").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.value === status)));
@@ -106,44 +143,30 @@ export function buildTagForm(o: TagFormOptions): HTMLFormElement {
   const addNote = h("button", { type: "button", className: "link", textContent: "+ Add a note", hidden: !!mine?.notes });
   addNote.addEventListener("click", () => { notesWrap.hidden = false; addNote.hidden = true; notes.focus(); layout(); });
 
-  // One "List" picker for plain lists, people and projects. Optional: a wallet doesn't need one.
-  const lists = o.boot?.lists ?? [];
-  const entities = o.boot?.entities ?? [];
+  // Shared list is secondary: how a tag becomes visible to collaborators.
   const list = h("select");
-  list.setAttribute("aria-label", "List");
-  const group = (label: string, items: { value: string; text: string }[]) =>
-    items.length ? h("optgroup", { label }, ...items.map((i) => h("option", { value: i.value, textContent: i.text }))) : null;
+  list.setAttribute("aria-label", "Also in a list");
   list.append(
     h("option", { value: "", textContent: "None" }),
-    ...[
-      group("Lists", lists.map((l) => ({ value: `l:${l.id}`, text: l.visibility === "shared" ? `${l.name} (shared)` : l.name }))),
-      group("People", entities.filter((e) => e.type === "individual").map((e) => ({ value: `e:${e.id}`, text: e.name }))),
-      group("Projects", entities.filter((e) => e.type !== "individual").map((e) => ({ value: `e:${e.id}`, text: e.name }))),
-    ].filter((g): g is HTMLOptGroupElement => !!g),
+    ...lists.map((l) => h("option", { value: `l:${l.id}`, textContent: l.visibility === "shared" ? `${l.name} (shared)` : l.name })),
     h("option", { value: "__new", textContent: "New list…" }),
   );
-  if (mine?.entity && entities.some((e) => e.id === mine.entity!.id)) list.value = `e:${mine.entity.id}`;
   const newList = h("input", { placeholder: "List name", maxLength: 80, hidden: true });
   newList.setAttribute("aria-label", "New list name");
   const vis = h("span", { className: "vis" });
-  // A name that mentions someone you already track is probably theirs.
-  const suggest = h("button", { type: "button", className: "link", hidden: true });
-  let suggested = "";
+
   const sync = () => {
+    const creating = who.value === "__person" || who.value === "__project";
+    newWho.hidden = !creating;
+    newWho.placeholder = who.value === "__person" ? "Person's name" : "Project name";
     newList.hidden = list.value !== "__new";
     const shared = lists.find((l) => `l:${l.id}` === list.value && l.visibility === "shared");
     vis.className = `vis${shared ? " shared" : ""}`;
-    vis.textContent = shared ? `Shared with ${shared.name}` : "Private to you";
-    const n = name.value.toLowerCase();
-    const match = !list.value && n.length > 2 ? entities.find((e) => n.includes(e.name.toLowerCase())) : undefined;
-    suggested = match ? `e:${match.id}` : "";
-    suggest.hidden = !match;
-    if (match) suggest.textContent = `Add to ${match.name}?`;
+    vis.textContent = shared ? `Shared with ${shared.name}` : who.value ? "Private to you" : "One-off name, private to you";
     layout();
   };
-  suggest.addEventListener("click", () => { list.value = suggested; sync(); });
+  who.addEventListener("change", sync);
   list.addEventListener("change", sync);
-  name.addEventListener("input", sync);
   sync();
   const dest = h("div", { className: "dest" }, vis);
 
@@ -158,11 +181,13 @@ export function buildTagForm(o: TagFormOptions): HTMLFormElement {
       ? h("label", {}, "Address", address)
       : h("div", { className: "meta" }, h("span", { className: "addr", title: o.address, textContent: truncateAddress(o.address) }), chain),
     pasting && h("div", { className: "meta" }, h("span", {}), chain),
-    h("label", {}, "Name", name),
+    h("label", {}, "Who is this?", who),
+    newWho,
+    h("label", {}, "Role", role),
+    h("label", {}, "Name for this address", name),
     h("label", {}, "Labels", labels),
-    h("label", {}, "List", h("span", { className: "opt", textContent: " · optional" }), list),
+    h("label", {}, "Also in a list", h("span", { className: "opt", textContent: " · optional" }), list),
     newList,
-    suggest,
     addNote,
     notesWrap,
     dest,
@@ -175,25 +200,43 @@ export function buildTagForm(o: TagFormOptions): HTMLFormElement {
     error.textContent = "";
     const parsed = parsePastedAddress(address.value);
     if (!parsed || parsed.kind === "ens" || parsed.kind === "sns") { error.textContent = "Paste a wallet address."; address.focus(); return; }
-    if (!name.value.trim()) { error.textContent = "Add a name."; name.focus(); return; }
+    if (!name.value.trim()) { error.textContent = "Add a name for this address."; name.focus(); return; }
+    if ((who.value === "__person" || who.value === "__project") && !newWho.value.trim()) {
+      error.textContent = who.value === "__person" ? "Name the person." : "Name the project.";
+      newWho.focus(); layout(); return;
+    }
     if (list.value === "__new" && !newList.value.trim()) { error.textContent = "Name the new list, or pick None."; newList.focus(); layout(); return; }
     const family = parsed.kind;
     const chosenChain = CHAINS[chain.value as keyof typeof CHAINS]?.family === family ? chain.value : CHAIN_IDS.find((c) => CHAINS[c].family === family)!;
     save.disabled = true;
-    const [kind, id] = list.value.split(":");
+    const whoParts = who.value.split(":");
+    const listParts = list.value.split(":");
     const r = await send<TagResult>({ type: "tag", input: {
       address: parsed.raw, chain: chosenChain, displayLabel: name.value.trim(), notes: notes.value, status,
       tags: tags.value.split(",").map((t) => t.trim()).filter(Boolean),
-      listId: kind === "l" ? id : undefined, entityId: kind === "e" ? id : undefined,
+      relationship: role.value,
+      entityId: whoParts[0] === "e" ? whoParts[1] : undefined,
+      newEntityName: who.value === "__person" || who.value === "__project" ? newWho.value.trim() : undefined,
+      newEntityType: who.value === "__person" ? "individual" : who.value === "__project" ? "project" : undefined,
+      listId: listParts[0] === "l" ? listParts[1] : undefined,
       newListName: list.value === "__new" ? newList.value.trim() : undefined,
     } });
     save.disabled = false;
     if (!r.ok) { error.textContent = r.error; layout(); return; }
-    const target = list.value === "__new" ? newList.value.trim() : list.selectedOptions[0]?.textContent?.replace(/ \(shared\)$/, "");
-    const where = list.value ? ` to ${target}` : "";
+    const whoLabel = who.value === "__person" || who.value === "__project"
+      ? newWho.value.trim()
+      : who.value ? who.selectedOptions[0]?.textContent : "";
+    const listLabel = list.value === "__new"
+      ? newList.value.trim()
+      : list.value ? list.selectedOptions[0]?.textContent?.replace(/ \(shared\)$/, "") : "";
+    const where = whoLabel && listLabel
+      ? ` as ${whoLabel}, in ${listLabel}`
+      : whoLabel ? ` as ${whoLabel}`
+        : listLabel ? ` to ${listLabel}`
+          : "";
     o.onDone(r.queued ? `Saved${where}. It will sync when you're back online.` : `Saved${where}.`);
   });
 
-  queueMicrotask(() => (pasting ? address : name).focus());
+  queueMicrotask(() => (pasting ? address : who).focus());
   return form;
 }
