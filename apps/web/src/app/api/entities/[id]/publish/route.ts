@@ -5,8 +5,8 @@ import { getDb } from "@/lib/db";
 import { assertPublishable, uniqueSlug } from "@/lib/entities";
 
 export const POST = route<{ id: string }>(async ({ user, params, body }) => {
-  const { publish, allowIndexing, acknowledge } = await body(z.object({
-    publish: z.boolean(), allowIndexing: z.boolean().optional(), acknowledge: z.boolean().optional(),
+  const { publish, allowIndexing, acknowledge, publicFigure } = await body(z.object({
+    publish: z.boolean(), allowIndexing: z.boolean().optional(), acknowledge: z.boolean().optional(), publicFigure: z.boolean().optional(),
   }));
   const entity = await getOwnEntity(params.id, user._id);
   const db = await getDb();
@@ -16,12 +16,13 @@ export const POST = route<{ id: string }>(async ({ user, params, body }) => {
     await db.collection("entities").updateOne({ _id: entity._id }, { $set: { visibility: "private", allowIndexing: false, updatedAt: now } });
     return { visibility: "private" };
   }
-  if (!acknowledge) throw new ApiError(422, "Confirm that this profile can be public before publishing.");
-  await assertPublishable(entity, user);
+  if (!acknowledge) throw new ApiError(422, "Confirm that these names can be public, shown as published by you.");
+  await assertPublishable(entity, user, { publicFigure });
   const slug = entity.slug ?? await uniqueSlug(entity.name, entity._id);
-  const status = entity.verification?.status === "verified" ? "verified" : "self_claimed";
+  // Publishing is your attribution, not an ownership claim: it shows as published by you, unless it was verified before.
+  const status = entity.verification?.status === "verified" ? "verified" : "community";
   await db.collection("entities").updateOne({ _id: entity._id }, {
-    $set: { visibility: "public", slug, allowIndexing: !!allowIndexing, "verification.status": status, publishedAt: now, updatedAt: now },
+    $set: { visibility: "public", slug, allowIndexing: !!allowIndexing, publishedAt: now, updatedAt: now, ...(publicFigure ? { publicFigureAck: now } : {}) },
   });
   await track("profile_published", user._id);
   return { visibility: "public", slug, status };

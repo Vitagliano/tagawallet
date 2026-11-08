@@ -212,24 +212,26 @@ test("public profiles: explicit publishing, provenance, reports, moderation, unp
   // Must be acknowledged, and isn't visible before that.
   expect((await owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true } })).status()).toBe(422);
   const res = await json(owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } }));
-  expect(res.status).toBe("self_claimed");
+  expect(res.status).toBe("community");
   await json(owner.ctx.post(`/api/entities/${e.id}/wallets`, { data: { walletId: w.id, visibility: "public", relationship: "treasury" } }));
 
   const profile = await json(anon.get(`/api/public/profiles/${res.slug}`));
-  expect(profile.verification).toBe("self_claimed");
+  expect(profile.verification).toBe("community");
+  expect(profile.publishedBy.name).toBeTruthy();
   expect(profile.wallets).toHaveLength(1);
-  expect(profile.wallets[0].source).toMatch(/Self-claimed/);
+  expect(profile.wallets[0].source).toMatch(/^Published by /);
   const raw = JSON.stringify(profile);
   expect(raw).not.toContain("PRIVATE"); expect(raw).not.toContain(hidden.address); expect(raw).not.toContain("ownerId");
 
   const page = await (await anon.get(`/p/${res.slug}`)).text();
-  expect(page).toContain("Report or dispute"); expect(page).toContain("Self-claimed");
+  expect(page).toContain("Report or dispute"); expect(page).toContain("published by");
   expect(page).toMatch(/<meta name="robots" content="noindex/);
   expect(page).not.toContain("PRIVATE LABEL");
 
   // Other people's chips see the public claim, with its source, and never the owner's private label.
   const seen = await resolve(viewer.ctx, A3);
-  expect(seen[0]).toMatchObject({ source: "self_claimed", label: name });
+  expect(seen[0]).toMatchObject({ source: "community", label: name });
+  expect(seen[0].provenance).toMatch(/^Published by /);
   expect(JSON.stringify(seen)).not.toContain("PRIVATE");
   expect(await resolve(viewer.ctx, A1)).toEqual([]);
 
@@ -262,12 +264,15 @@ test("public profiles: explicit publishing, provenance, reports, moderation, unp
   expect((await owner.ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } })).status()).toBe(403);
 });
 
-test("safe attribution: individuals can't be published or publicly linked unverified", async () => {
+test("safe attribution: a person can only be published as a confirmed public figure; no personal contact details", async () => {
   const { ctx } = await account();
   const e = await json(ctx.post("/api/entities", { data: { name: "Some Person", type: "individual" } }), 201);
-  const w = await addWallet(ctx, { address: A1, entityId: e.id });
+  // A fresh address: published claims are global, so a shared test address would leak into other tests.
+  const w = await addWallet(ctx, { address: "0x" + createHash("sha256").update(`person${Math.random()}`).digest("hex").slice(0, 40), entityId: e.id });
+  // Publishing is attribution, not ownership: no signature needed, but a person needs the public-figure confirmation.
+  await json(ctx.post(`/api/entities/${e.id}/wallets`, { data: { walletId: w.id, visibility: "public" } }));
   expect((await ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } })).status()).toBe(422);
-  expect((await ctx.post(`/api/entities/${e.id}/wallets`, { data: { walletId: w.id, visibility: "public" } })).status()).toBe(422);
+  expect((await json(ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true, publicFigure: true } }))).status).toBe("community");
   const p = await json(ctx.post("/api/entities", { data: { name: "Co", type: "company", description: "call me at +1 415 555 0100 now" } }), 201);
   expect((await ctx.post(`/api/entities/${p.id}/publish`, { data: { publish: true, acknowledge: true } })).status()).toBe(422);
 });
@@ -669,7 +674,7 @@ test("wallet reports: one public wallet claim can be reported and removed, and o
   const profile = await json(anon.get(`/api/public/profiles/${slug}`));
   const linkId = profile.wallets[0].linkId;
   expect(linkId).toBeTruthy();
-  expect((await resolve(viewer.ctx, A1))[0]).toMatchObject({ source: "self_claimed", linkId });
+  expect((await resolve(viewer.ctx, A1))[0]).toMatchObject({ source: "community", linkId });
 
   // Only public claims can be reported, so a report reveals nothing private.
   const privateLink = (await (await db()).collection("wallet_entity_links").findOne({ walletId: new (await import("mongodb")).ObjectId(priv.id) }))!._id.toString();
@@ -708,4 +713,50 @@ test("admin sites: moderators edit and reset the extension's site list, nobody e
   const reset = await json(anon.get("/api/extension/sites"));
   expect(reset.custom).toBe(false);
   expect(reset.sites).toContain("mempool.space");
+});
+
+test("public lists and profiles: published by their owner, collaborators' wallets and notes stay private", async () => {
+  const owner = await account(), helper = await account(), viewer = await account();
+  const anon = await request.newContext({ baseURL: BASE });
+  const fresh = () => "0x" + createHash("sha256").update(`${Math.random()}`).digest("hex").slice(0, 40);
+  const B1 = fresh(), B2 = fresh();
+  const handle = `pub${Date.now() % 1e9}`;
+  await json(owner.ctx.patch("/api/account", { data: { displayName: "Pat Publisher" } }));
+  // A public profile needs a handle; handles are unique and some are reserved.
+  expect((await owner.ctx.patch("/api/account", { data: { profilePublic: true } })).status()).toBe(422);
+  expect((await owner.ctx.patch("/api/account", { data: { handle: "admin" } })).status()).toBe(422);
+  await json(owner.ctx.patch("/api/account", { data: { handle, bio: "I track bridges", profilePublic: true } }));
+  expect((await helper.ctx.patch("/api/account", { data: { handle } })).status()).toBe(409);
+
+  const list = await json(owner.ctx.post("/api/lists", { data: { name: "Bridges" } }));
+  const mine = await addWallet(owner.ctx, { address: B1, displayLabel: "Wormhole router", tags: ["bridge"], notes: "SECRET NOTE" });
+  await json(owner.ctx.post(`/api/lists/${list.id}/wallets`, { data: { walletId: mine.id } }));
+  const { url } = await json(owner.ctx.post(`/api/lists/${list.id}/members`, { data: { role: "editor" } }));
+  await json(helper.ctx.post(`/api/invites/${url.split("/invite/")[1]}`));
+  const theirs = await addWallet(helper.ctx, { address: B2, displayLabel: "HELPER PRIVATE NAME" });
+  await json(helper.ctx.post(`/api/lists/${list.id}/wallets`, { data: { walletId: theirs.id } }));
+
+  // Only the owner can publish, and nothing shows before that.
+  expect((await anon.get(`/l/${list.id}`)).status()).toBe(404);
+  expect((await helper.ctx.post(`/api/lists/${list.id}/publish`, { data: { publish: true } })).status()).toBe(403);
+  await json(owner.ctx.post(`/api/lists/${list.id}/publish`, { data: { publish: true } }));
+
+  const page = await (await anon.get(`/l/${list.id}`)).text();
+  expect(page).toContain("Wormhole router"); expect(page).toContain("Pat Publisher");
+  expect(page).not.toContain("HELPER PRIVATE NAME"); expect(page).not.toContain("SECRET NOTE");
+  const profile = await (await anon.get(`/u/${handle}`)).text();
+  expect(profile).toContain("I track bridges"); expect(profile).toContain("Bridges");
+
+  // Lookups show it as published by the owner, never the helper's wallet.
+  const seen = await resolve(viewer.ctx, B1);
+  expect(seen[0]).toMatchObject({ source: "community", label: "Wormhole router", publishedBy: { name: "Pat Publisher", handle } });
+  expect(await resolve(viewer.ctx, B2)).toEqual([]);
+  expect(await (await anon.get(`/a/${B1}`)).text()).toContain("Wormhole router");
+
+  // Going private takes it all back; turning the profile off hides the page.
+  await json(owner.ctx.post(`/api/lists/${list.id}/publish`, { data: { publish: false } }));
+  expect((await anon.get(`/l/${list.id}`)).status()).toBe(404);
+  expect(await resolve(viewer.ctx, B1)).toEqual([]);
+  await json(owner.ctx.patch("/api/account", { data: { profilePublic: false } }));
+  expect((await anon.get(`/u/${handle}`)).status()).toBe(404);
 });

@@ -1,12 +1,13 @@
 export type LabelSource = "private" | "shared" | "self_claimed" | "verified" | "community" | "official";
 
-export function provenanceText(source: LabelSource, listName?: string): string {
+/** `name` is the list for "shared", and who published it for "community". */
+export function provenanceText(source: LabelSource, name?: string): string {
   switch (source) {
     case "private": return "Your private tag";
-    case "shared": return `Shared by ${listName ?? "a list"}`;
+    case "shared": return `Shared by ${name ?? "a list"}`;
     case "self_claimed": return "Self-claimed";
     case "verified": return "Verified";
-    case "community": return "Community";
+    case "community": return name ? `Published by ${name}` : "Published";
     case "official": return "Official";
   }
 }
@@ -21,11 +22,13 @@ export interface ResolvedLabel {
   tags: string[];
   status?: string;
   notes?: string;
-  entity?: { id: string; name: string; slug?: string; verification: string; linkedWallets: number };
+  entity?: { id: string; name: string; slug?: string; verification: string; linkedWallets: number; relationship?: string };
   /** For a public claim: the wallet-to-profile link, so that one wallet's label can be reported. */
   linkId?: string;
   links: { type: string; url: string; label?: string }[];
   listName?: string;
+  /** For "community": the person who made it public, and their profile handle when they have a public profile. */
+  publishedBy?: { name: string; handle?: string };
   shared: boolean;
 }
 

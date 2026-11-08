@@ -4,90 +4,13 @@ import { Suspense, use, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR, { useSWRConfig } from "swr";
 import { api, fetcher } from "@/lib/client";
-import { Button, Empty, ErrorNote, Field, Input, Modal, Select, Textarea, VisibilityPill } from "@/components/ui";
+import { Button, Empty, Field, Input, Modal, Textarea, VisibilityPill } from "@/components/ui";
 import { WalletsView } from "@/components/wallets-view";
 import { Menu, menuItem } from "@/components/kit";
 import { KindIcon } from "@/components/collections";
 import { ImportDialog } from "@/components/import-dialog";
+import { ListActivity, ListPublic, SharePanel } from "@/components/features/list-sharing";
 
-function SharePanel({ list, onChange }: { list: any; onChange: () => void }) {
-  const [email, setEmail] = useState(""), [role, setRole] = useState("viewer"), [url, setUrl] = useState(""), [error, setError] = useState("");
-  const manager = list.role === "owner" || list.role === "admin";
-  async function invite(withEmail: boolean) {
-    setError(""); setUrl("");
-    try {
-      const r = await api(`/api/lists/${list.id}/members`, { body: { role, email: withEmail ? email : undefined } });
-      if (withEmail) setEmail(""); else setUrl(r.url);
-      onChange();
-    } catch (e) { setError((e as Error).message); }
-  }
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted">People here see the name, labels and notes of every wallet in this list. Who a wallet belongs to stays private unless you choose otherwise on that person or project.</p>
-      <ul className="divide-y divide-line text-sm">
-        <li className="flex justify-between py-2"><span>{list.owner.name}</span><span className="text-muted">Owner</span></li>
-        {list.collaborators.map((c: any) => (
-          <li key={c.userId} className="flex items-center justify-between gap-2 py-2">
-            <span className="truncate">{c.name} <span className="text-muted">{c.email}</span></span>
-            {manager ? (
-              <span className="flex items-center gap-2">
-                <Select aria-label={`Role for ${c.name}`} className="w-auto" value={c.role} onChange={async (e) => { await api(`/api/lists/${list.id}/members/${c.userId}`, { method: "PATCH", body: { role: e.target.value } }); onChange(); }}>
-                  <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option>
-                </Select>
-                <Button variant="ghost" aria-label={`Remove ${c.name}`} onClick={async () => { await api(`/api/lists/${list.id}/members/${c.userId}`, { method: "DELETE" }); onChange(); }}>✕</Button>
-              </span>
-            ) : <span className="capitalize text-muted">{c.role}</span>}
-          </li>
-        ))}
-      </ul>
-      {manager && list.invites?.length > 0 && (
-        <div className="space-y-1 border-t border-line pt-3">
-          <h3 className="text-xs font-medium text-muted">Pending invitations</h3>
-          <ul className="divide-y divide-line text-sm">
-            {list.invites.map((inv: any) => (
-              <li key={inv.id} className="flex items-center justify-between gap-2 py-2">
-                <span className="min-w-0 truncate">{inv.email ?? "Invite link"} <span className="text-muted">· {inv.role} · expires {new Date(inv.expiresAt).toLocaleDateString()}</span></span>
-                <Button variant="ghost" aria-label={`Revoke invitation ${inv.email ?? "link"}`} onClick={async () => {
-                  setError("");
-                  try { await api(`/api/lists/${list.id}/invites/${inv.id}`, { method: "DELETE" }); onChange(); } catch (e) { setError((e as Error).message); }
-                }}>Revoke</Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {manager && (
-        <div className="space-y-2 border-t border-line pt-4">
-          <div className="flex gap-2">
-            <Input type="email" aria-label="Invite by email" placeholder="teammate@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <Select aria-label="Role" className="w-auto" value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option>
-            </Select>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="primary" disabled={!email} onClick={() => invite(true)}>Send invite</Button>
-            <Button onClick={() => invite(false)}>Create invite link</Button>
-          </div>
-          {url && <Input readOnly aria-label="Invite link" value={url} onFocus={(e) => e.target.select()} />}
-          <ErrorNote>{error}</ErrorNote>
-          {list.visibility === "shared" && list.collaborators.length === 0 && (
-            <Button variant="ghost" onClick={async () => { await api(`/api/lists/${list.id}`, { method: "PATCH", body: { visibility: "private" } }); onChange(); }}>Make private again</Button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Activity({ id }: { id: string }) {
-  const { data } = useSWR<any[]>(`/api/lists/${id}/activity`, fetcher);
-  if (!data?.length) return <p className="text-sm text-muted">Nothing yet.</p>;
-  return (
-    <ul className="space-y-1.5 text-sm">
-      {data.map((a) => <li key={a.id}><span className="font-medium">{a.actor}</span> {a.action}{a.detail ? <span className="text-muted"> · {a.detail}</span> : null}</li>)}
-    </ul>
-  );
-}
 
 export default function ListPage({ params }: { params: Promise<{ id: string }> }) {
   return <Suspense><ListInner params={params} /></Suspense>;
@@ -98,7 +21,7 @@ function ListInner({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
   const { mutate: mutateAll } = useSWRConfig();
   const { data: list, error, mutate } = useSWR(`/api/lists/${id}`, fetcher);
-  const [dialog, setDialog] = useState<null | "import" | "share" | "edit" | "delete" | "activity">(null);
+  const [dialog, setDialog] = useState<null | "import" | "share" | "edit" | "delete" | "activity" | "public">(null);
   // Right after creating a list, the next step is inviting people.
   const wantsShare = useSearchParams().get("share") === "1";
   useEffect(() => { if (wantsShare) { setDialog("share"); router.replace(`/lists/${id}`, { scroll: false }); } }, [wantsShare]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -131,6 +54,7 @@ function ListInner({ params }: { params: Promise<{ id: string }> }) {
                 {canEdit && <button className={menuItem} onClick={() => { close(); setDialog("import"); }}>Import CSV or JSON</button>}
                 <a className={menuItem} href={`/api/lists/${id}/export?format=csv`}>Export CSV</a>
                 <a className={menuItem} href={`/api/lists/${id}/export?format=json`}>Export JSON</a>
+                <button className={menuItem} onClick={() => { close(); setDialog("public"); }}>{list.publishedAt ? "Public…" : "Make public…"}</button>
                 <button className={menuItem} onClick={() => { close(); setDialog("activity"); }}>Activity</button>
                 <button className={menuItem} onClick={async () => { close(); const c = await api(`/api/lists/${id}/duplicate`, { method: "POST" }); refreshLists(); router.push(`/lists/${c.id}`); }}>Duplicate</button>
                 {canEdit && <button className={menuItem} onClick={() => { close(); setForm({ name: list.name, description: list.description ?? "" }); setDialog("edit"); }}>Rename</button>}
@@ -148,7 +72,8 @@ function ListInner({ params }: { params: Promise<{ id: string }> }) {
 
       {dialog === "import" && <ImportDialog scope={{ kind: "list", id, name: list.name }} onClose={() => setDialog(null)} />}
       <Modal open={dialog === "share"} onClose={() => setDialog(null)} title={`Share “${list.name}”`}><SharePanel list={list} onChange={() => { mutate(); refreshLists(); }} /></Modal>
-      <Modal open={dialog === "activity"} onClose={() => setDialog(null)} title="Activity">{dialog === "activity" && <Activity id={id} />}</Modal>
+      <Modal open={dialog === "public"} onClose={() => setDialog(null)} title={`Make “${list.name}” public`}>{dialog === "public" && <ListPublic list={list} onChange={() => { mutate(); refreshLists(); }} />}</Modal>
+      <Modal open={dialog === "activity"} onClose={() => setDialog(null)} title="Activity">{dialog === "activity" && <ListActivity id={id} />}</Modal>
       <Modal open={dialog === "edit"} onClose={() => setDialog(null)} title="Rename list">
         <form className="space-y-3" onSubmit={async (e) => { e.preventDefault(); await api(`/api/lists/${id}`, { method: "PATCH", body: form }); mutate(); refreshLists(); setDialog(null); }}>
           <Field label="Name"><Input required maxLength={80} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
@@ -158,7 +83,7 @@ function ListInner({ params }: { params: Promise<{ id: string }> }) {
       </Modal>
       <Modal open={dialog === "delete"} onClose={() => setDialog(null)} title={`Delete “${list.name}”?`}>
         <p className="mb-4 text-sm text-muted">The list goes away for everyone on it. Its wallets stay in your account and in your other lists.</p>
-        <Button variant="danger" onClick={async () => { await api(`/api/lists/${id}`, { method: "DELETE" }); await refreshLists(); router.push("/dashboard"); }}>Delete list</Button>
+        <Button variant="danger" onClick={async () => { await api(`/api/lists/${id}`, { method: "DELETE" }); await refreshLists(); router.push("/lists"); }}>Delete list</Button>
       </Modal>
     </div>
   );

@@ -3,6 +3,7 @@ import { chainFamily, provenanceText, sortLabels, type ChainId, type ResolvedLab
 import { getDb } from "./db";
 import { collaboratorListIds } from "./access";
 import { ensAddresses } from "./ens";
+import { publishers } from "./publishers";
 
 type Query = { normalized: string; kind: string };
 
@@ -15,10 +16,11 @@ async function linkedCounts(entityIds: ObjectId[], visibilities?: string[]) {
   return new Map(rows.map((r) => [r._id.toString(), r.n as number]));
 }
 
-function entityInfo(e: Document, counts: Map<string, number>) {
+function entityInfo(e: Document, counts: Map<string, number>, relationship?: string) {
   return {
     id: e._id.toString(), name: e.name, slug: e.slug, verification: e.verification?.status ?? "unverified",
     linkedWallets: counts.get(e._id.toString()) ?? 0,
+    ...(relationship ? { relationship } : {}),
   };
 }
 const linkView = (l: Document) => ({ type: l.type, url: l.url, label: l.label });
@@ -27,7 +29,8 @@ const linkView = (l: Document) => ({ type: l.type, url: l.url, label: l.label })
  * The privacy boundary of the product. A label is returned only when it comes from
  *  1. the viewer's own wallet record,
  *  2. a list explicitly shared with the viewer, or
- *  3. a published entity's explicitly public link.
+ *  3. a published entity's explicitly public link, or a published list (only wallets its owner added),
+ *     both shown as published by that person, since publishing is their attribution, not an ownership claim.
  * Other people's private records with the same address are never read into a label.
  */
 export async function resolveAddresses(queries: Query[], viewerId: ObjectId | null): Promise<ResolveResult[]> {
@@ -78,30 +81,52 @@ export async function resolveAddresses(queries: Query[], viewerId: ObjectId | nu
         source, provenance: provenanceText(source, listName), label: w.displayLabel || entity?.name || "Untitled wallet",
         walletId: w._id.toString(), chain: w.chain, tags: w.tags ?? [], status: w.status, notes: w.notes, listName,
         shared: !isOwn, links: [...(w.links ?? []), ...(entity?.links ?? [])].map(linkView),
-        entity: entity ? entityInfo(entity, counts) : undefined,
+        entity: entity ? entityInfo(entity, counts, link?.relationship) : undefined,
       };
       if (family.get(w.normalizedAddress) && fits(w)) out.get(w.normalizedAddress)!.push(label);
       for (const l of w.links ?? []) if (l.type === "ens" && out.has(l.url)) out.get(l.url)!.push(label);
     }
   }
 
-  // 3: published public claims. Only the entity and the link are read, never the wallet's label or notes.
+  // 3: published contacts. Only the entity and the link are read, never the wallet's label or notes.
   if (norm.length) {
-    const records = await db.collection("wallets").find({ normalizedAddress: { $in: norm } }, { projection: { normalizedAddress: 1, chain: 1 }, limit: 5000 }).toArray();
+    const records = await db.collection("wallets").find({ normalizedAddress: { $in: norm } }, { projection: { normalizedAddress: 1, chain: 1, ownerId: 1, displayLabel: 1, tags: 1 }, limit: 5000 }).toArray();
     const links = await db.collection("wallet_entity_links").find({ walletId: { $in: records.map((r) => r._id) }, visibility: "public" }).toArray();
     if (links.length) {
       const entities = await db.collection("entities").find({
         _id: { $in: links.map((l) => l.entityId) }, visibility: "public", "moderation.removedAt": null,
       }).toArray();
       const counts = await linkedCounts(entities.map((e) => e._id), ["public"]);
+      const by = await publishers(entities.map((e) => e.ownerId));
       for (const link of links) {
         const entity = entities.find((e) => e._id.equals(link.entityId));
         const record = records.find((r) => r._id.equals(link.walletId));
         if (!entity || !record || !fits(record)) continue;
-        const source = entity.verification?.status === "verified" ? "verified" : "self_claimed";
+        const source = entity.verification?.status === "verified" ? "verified" : "community";
+        const publishedBy = by.get(entity.ownerId.toString());
         out.get(record.normalizedAddress)!.push({
-          source, provenance: provenanceText(source), label: entity.name, chain: record.chain, tags: entity.tags ?? [],
-          shared: false, links: (entity.links ?? []).map(linkView), entity: entityInfo(entity, counts), linkId: link._id.toString(),
+          source, provenance: provenanceText(source, publishedBy?.name), label: entity.name, chain: record.chain, tags: entity.tags ?? [],
+          shared: false, links: (entity.links ?? []).map(linkView), entity: entityInfo(entity, counts, link.relationship), linkId: link._id.toString(),
+          ...(publishedBy ? { publishedBy } : {}),
+        });
+      }
+    }
+
+    // 3b: published lists. A wallet counts only if the list's owner added it themselves.
+    const memberships = await db.collection("wallet_list_memberships").find({ walletId: { $in: records.map((r) => r._id) } }, { limit: 5000 }).toArray();
+    if (memberships.length) {
+      const lists = await db.collection("lists").find({ _id: { $in: [...new Set(memberships.map((m) => m.listId))] }, publishedAt: { $ne: null }, deletedAt: null }, { projection: { name: 1, ownerId: 1 } }).toArray();
+      const by = await publishers(lists.map((l) => l.ownerId));
+      for (const m of memberships) {
+        const list = lists.find((l) => l._id.equals(m.listId));
+        const record = records.find((r) => r._id.equals(m.walletId));
+        if (!list || !record || !fits(record) || !record.ownerId?.equals(list.ownerId)) continue;
+        if (viewerId && viewerId.equals(list.ownerId)) continue; // Your own list: you already see your own name for it.
+        const publishedBy = by.get(list.ownerId.toString());
+        out.get(record.normalizedAddress)!.push({
+          source: "community", provenance: `${provenanceText("community", publishedBy?.name)}, in “${list.name}”`,
+          label: record.displayLabel || "Unnamed wallet", chain: record.chain, tags: record.tags ?? [], shared: false, links: [],
+          listName: list.name, ...(publishedBy ? { publishedBy } : {}),
         });
       }
     }
@@ -111,13 +136,15 @@ export async function resolveAddresses(queries: Query[], viewerId: ObjectId | nu
       visibility: "public", "moderation.removedAt": null, links: { $elemMatch: { type: "ens", url: { $in: names } } },
     }).toArray();
     const counts = await linkedCounts(entities.map((e) => e._id), ["public"]);
+    const by = await publishers(entities.map((e) => e.ownerId));
     for (const entity of entities) {
-      const source = entity.verification?.status === "verified" ? "verified" : "self_claimed";
+      const source = entity.verification?.status === "verified" ? "verified" : "community";
+      const publishedBy = by.get(entity.ownerId.toString());
       for (const l of entity.links) {
         if (l.type !== "ens" || !out.has(l.url)) continue;
         out.get(l.url)!.push({
-          source, provenance: provenanceText(source), label: entity.name, chain: "ethereum", tags: entity.tags ?? [],
-          shared: false, links: entity.links.map(linkView), entity: entityInfo(entity, counts),
+          source, provenance: provenanceText(source, publishedBy?.name), label: entity.name, chain: "ethereum", tags: entity.tags ?? [],
+          shared: false, links: entity.links.map(linkView), entity: entityInfo(entity, counts), ...(publishedBy ? { publishedBy } : {}),
         });
       }
     }
