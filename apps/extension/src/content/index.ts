@@ -1,6 +1,7 @@
 import { detectAddresses, xHandleFromPath, type DetectedAddress, type HandleEntry } from "@tagawallet/shared/lite";
 import { chainFromLocation, send, type Detected, type QueryAddress, type ResolvedLabel, type Settings, type TabMessage } from "../lib/messages";
-import { attachChip, CHIP_TAG, openCard, openNotice, closeCard, updateChip, type ChipHandle } from "./ui";
+import { attachChip, CHIP_TAG, closeCard, kindOf, openCard, openNotice, updateChip, type ChipHandle } from "./ui";
+import { closePanel, openPanel, routeTo, togglePanel } from "./float";
 
 const HOST = location.hostname;
 const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT", "OPTION", "SVG", "CANVAS", "IFRAME", CHIP_TAG.toUpperCase()]);
@@ -83,7 +84,15 @@ async function onChipClick(handle: ChipHandle) {
   void send({ type: "track", name: "inline_chip_click" });
   // Keyed by what was on the page: a name keeps its labels even after its chip points at the address behind it.
   const key = handle.host.getAttribute("data-address") ?? handle.found.normalized;
-  await openCard(handle.host, handle.found, labels.get(key) ?? [], settings!, HOST);
+  const known = labels.get(key) ?? [];
+  // An address nobody has tagged: the only thing to do is tag it, so go straight to the form in the panel.
+  // The message is sent first thing, while the click still counts as a user gesture (needed for the side panel).
+  if (!known.length && (handle.found.kind === "evm" || handle.found.kind === "solana" || handle.found.kind === "bitcoin")) {
+    closeCard();
+    await routeTo({ view: "tag", address: handle.found.raw, kind: kindOf(handle.found) });
+    return;
+  }
+  await openCard(handle.host, handle.found, known, settings!);
 }
 
 function scan(root: Node) {
@@ -137,6 +146,19 @@ async function lookup(addresses: string[]) {
     void send({ type: "track", name: "first_inline_tag_viewed" });
   }
   void send({ type: "track", name: "inline_chip_impression", value: addresses.length });
+  reportPage();
+}
+
+/** Counts for the toolbar badge. Only numbers leave the page: never the addresses or any text. */
+function reportPage() {
+  if (!active) { void send({ type: "pageSummary", summary: { tagged: 0, flagged: 0, seen: 0 } }).catch(() => {}); return; }
+  let tagged = 0, flagged = 0;
+  for (const address of detected.keys()) {
+    const list = labels.get(address) ?? [];
+    if (list.length) tagged++;
+    if (list.some((l) => l.status === "watchlist" || l.status === "scam")) flagged++;
+  }
+  void send({ type: "pageSummary", summary: { tagged, flagged, seen: detected.size } }).catch(() => {});
 }
 
 /** An ENS name that resolves on-chain gets a chip for the address behind it, so it can be tagged right there. */
@@ -167,7 +189,7 @@ const foundFor = (e: HandleEntry): DetectedAddress => e.address
 function placeHandle(entry: HandleEntry, parent: Node, before: Node | null) {
   const handle = attachChip(foundFor(entry), parent, before, (h) => {
     void send({ type: "track", name: "inline_chip_click" });
-    void openCard(h.host, h.found, entry.labels, settings!, HOST);
+    void openCard(h.host, h.found, entry.labels, settings!);
   });
   handle.host.setAttribute(HANDLE_ATTR, entry.handle);
   updateChip(handle, entry.labels, settings!);
@@ -260,6 +282,7 @@ function runScan(root: Node) {
     // Everyday mutations stay on the subtree that changed.
     if (root === document.body || root instanceof ShadowRoot) scanShadows(root, fresh);
     void lookup([...fresh].filter((a) => !labels.has(a)));
+    reportPage();
   } catch (err) {
     console.debug("TagAWallet scan failed", err);
     void send({ type: "track", name: "content_script_error" });
@@ -324,6 +347,7 @@ function stop() {
   for (const h of handleChips) h.host.remove();
   handleChips.clear();
   chips.clear(); labels.clear(); detected.clear();
+  reportPage();
   // Forget what was scanned, so turning it back on finds everything again.
   forget(document.body);
 }
@@ -375,14 +399,31 @@ async function tagSelection(text: string) {
     openNotice(anchor, settings, "That's a name, not an address", "Open the name on an explorer and tag the address it points to.");
     return;
   }
-  const result = await send<Record<string, ResolvedLabel[]>>({ type: "resolve", addresses: [{ normalized: found.normalized, kind: found.kind as QueryAddress["kind"] }] });
-  const list = result?.[found.normalized] ?? [];
-  // Open straight on the form: the person asked to tag it.
-  await openCard(anchor, found, list, settings, HOST, { edit: true });
+  // Straight to the form in the panel: the person asked to tag it. The panel fills in their current tag.
+  selectionAnchor?.remove();
+  await routeTo({ view: "tag", address: found.raw, kind: kindOf(found) });
+}
+
+/** From the side panel: bring an address into view and flash its chip. */
+function locate(normalized: string): boolean {
+  const handle = [...(chips.get(normalized) ?? [])].find((h) => h.host.isConnected);
+  if (!handle) return false;
+  // A hidden chip has no box, so scroll to the text it sits beside instead.
+  const target = handle.host.hidden ? handle.host.parentElement ?? handle.host : handle.host;
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  const flash = handle.host.hidden ? target : handle.button;
+  const before = flash.style.cssText;
+  Object.assign(flash.style, { outline: "2px solid #c8421b", outlineOffset: "2px", borderRadius: "4px", transition: "outline-color 600ms ease" });
+  setTimeout(() => { flash.style.cssText = before; }, 1800);
+  return true;
 }
 
 function onTabMessage(message: TabMessage, _sender: chrome.runtime.MessageSender, reply: (r: unknown) => void) {
   if (message.type === "taw:tagSelection") { void tagSelection(message.text); return; }
+  if (message.type === "taw:locate") { reply({ found: locate(message.normalized) }); return; }
+  if (message.type === "taw:togglePanel") { togglePanel(); reply({ open: true }); return; }
+  if (message.type === "taw:openPanel") { void openPanel(); reply({ open: true }); return; }
+  if (message.type === "taw:closePanel") { closePanel(); reply({ open: false }); return; }
   if (message.type === "taw:settings") void applySettings();
   if (message.type === "taw:refresh" && active) {
     const all = [...chips.keys()];

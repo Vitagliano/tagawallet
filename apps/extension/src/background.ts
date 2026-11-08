@@ -1,5 +1,5 @@
 import { CURATED_SITES, chainFamily, normalizeAddress, provenanceText, sanitizeUrl, type ChainId, type HandleEntry, type ResolvedLabel } from "@tagawallet/shared/lite";
-import { DEFAULT_SETTINGS, isUntag, type AuthState, type Bootstrap, type FailedTag, type Message, type QueryAddress, type QueueItem, type Settings, type Status, type TabMessage, type TagInput, type TagResult, type UntagResult } from "./lib/messages";
+import { DEFAULT_SETTINGS, isUntag, type AuthState, type Bootstrap, type FailedTag, LOCAL_SETTINGS, type Collection, type Library, type Loaded, type Message, type PageSummary, type PanelMessage, type Route, type SearchResult, type WalletFiling, type QueryAddress, type QueueItem, type Settings, type Status, type TabMessage, type TagInput, type TagResult, type UntagResult } from "./lib/messages";
 
 const API = __API_BASE__;
 const CACHE_TTL = 5 * 60_000;
@@ -16,6 +16,8 @@ type Local = {
   token?: string; settings?: Settings; cache?: Record<string, CacheEntry>; queue?: QueueItem[]; failed?: FailedTag[];
   localTags?: Record<string, { input: TagInput; label: ResolvedLabel }>; sites?: string[]; bootstrap?: Bootstrap;
   handleIndex?: { entries: HandleEntry[]; expires: number; etag?: string };
+  /** The panel's directory, kept so it paints at once and still shows something offline. */
+  library?: Library;
   /** Set when the server rejected our token, so the person is told instead of silently signed out. */
   authExpired?: boolean;
 };
@@ -29,13 +31,46 @@ class NetworkError extends Error {}
 
 const normalizedOf = (q: { address: string; chain: string }) => normalizeAddress(q.address, chainFamily(q.chain as ChainId));
 
-/** The toolbar badge: "!" when the session ended, otherwise how many changes are waiting or need attention. */
-async function updateBadge() {
-  const { authExpired, queue = [], failed = [] } = await get("authExpired", "queue", "failed");
-  const text = authExpired ? "!" : queue.length + failed.length ? String(queue.length + failed.length) : "";
+const pageKey = (tabId: number) => `page:${tabId}`;
+
+/**
+ * The toolbar badge. "!" when the session ended. Otherwise, with the page badge on, how many addresses
+ * on the current tab are tagged (red if any is flagged). Pending or failed tags show as a dot.
+ */
+async function updateBadge(tabId?: number) {
+  const { authExpired, queue = [], failed = [], settings } = await get("authExpired", "queue", "failed", "settings");
+  const pageBadge = (settings?.pageBadge ?? DEFAULT_SETTINGS.pageBadge) && !authExpired;
+  const pending = queue.length + failed.length;
+
+  // The global badge covers every tab without its own value. A tab's own value wins while it's showing a page.
+  const text = authExpired ? "!" : pending ? "•" : "";
+  const color = authExpired || failed.length ? "#b3261e" : "#9a6a00";
+  const title = authExpired ? "TagAWallet: session expired. Click to reconnect." : failed.length ? `TagAWallet: ${failed.length} tag${failed.length === 1 ? "" : "s"} couldn't be saved` : pending ? `TagAWallet: ${pending} change${pending === 1 ? "" : "s"} waiting to sync` : "TagAWallet";
   await chrome.action.setBadgeText({ text }).catch(() => {});
-  await chrome.action.setBadgeBackgroundColor({ color: authExpired || failed.length ? "#b3261e" : "#6a675e" }).catch(() => {});
-  await chrome.action.setTitle({ title: authExpired ? "TagAWallet: session expired. Click to reconnect." : failed.length ? `TagAWallet: ${failed.length} tag${failed.length === 1 ? "" : "s"} couldn't be saved` : "TagAWallet" }).catch(() => {});
+  await chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+  await chrome.action.setTitle({ title }).catch(() => {});
+
+  // One tab when a page reported, otherwise every tab, so a settings change or sign-out leaves no stale count behind.
+  const ids = tabId !== undefined ? [tabId] : (await chrome.tabs.query({}).catch(() => [])).flatMap((t) => (t.id !== undefined ? [t.id] : []));
+  const pages = pageBadge && ids.length ? await chrome.storage.session.get(ids.map(pageKey)) : {};
+  for (const id of ids) {
+    const page = pages[pageKey(id)] as PageSummary | undefined;
+    const tagged = page?.tagged ?? 0;
+    const tabText = tagged ? (tagged > 99 ? "99+" : String(tagged)) : text;
+    const tabColor = tagged ? (page!.flagged ? "#b3261e" : "#1b7a4a") : color;
+    const tabTitle = tagged ? `TagAWallet: ${tagged} tagged on this page${page!.flagged ? `, ${page!.flagged} flagged` : ""}${page!.seen > tagged ? `, ${page!.seen - tagged} not tagged` : ""}` : title;
+    await chrome.action.setBadgeText({ tabId: id, text: tabText }).catch(() => {});
+    await chrome.action.setBadgeBackgroundColor({ tabId: id, color: tabColor }).catch(() => {});
+    await chrome.action.setTitle({ tabId: id, title: tabTitle }).catch(() => {});
+  }
+}
+
+/** Per-tab counts live in session storage, since the service worker sleeps between events. */
+async function storePage(tabId: number, summary: PageSummary) {
+  await chrome.storage.session.set({ [pageKey(tabId)]: summary });
+  await updateBadge(tabId);
+  // The side panel, if open, rescans that tab. Nobody listening is fine.
+  await chrome.runtime.sendMessage({ type: "taw:pageChanged", tabId } satisfies PanelMessage).catch(() => {});
 }
 
 async function authState(): Promise<AuthState> {
@@ -76,11 +111,17 @@ async function broadcast(message: TabMessage) {
   await Promise.all(tabs.map((t) => (t.id ? chrome.tabs.sendMessage(t.id, message).catch(() => {}) : null)));
 }
 
-function localLabel(input: TagInput, listName: string | null): ResolvedLabel {
+function localLabel(input: TagInput, listName: string | null, boot?: Bootstrap | null): ResolvedLabel {
+  const entity = input.entityId
+    ? boot?.entities.find((e) => e.id === input.entityId)
+    : input.newEntityName
+      ? { id: "local", name: input.newEntityName }
+      : undefined;
   return {
     source: "private", provenance: `${provenanceText("private")} · not synced yet`, label: input.displayLabel, chain: input.chain,
     tags: input.tags ?? [], status: input.status, notes: input.notes, shared: false, listName: listName ?? undefined,
     links: (input.links ?? []).filter((l) => sanitizeUrl(l.url)).map((l) => ({ type: l.type, url: l.url, label: l.label })),
+    entity: entity ? { id: entity.id, name: entity.name, verification: "unverified", linkedWallets: 1, relationship: input.relationship } : undefined,
   };
 }
 
@@ -158,7 +199,7 @@ async function tag(input: TagInput): Promise<TagResult> {
   const fallbackName = input.newListName ?? bootstrap?.lists.find((l) => l.id === withDefault.listId)?.name ?? null;
 
   const queueLocally = async () => {
-    localTags[normalized] = { input: withDefault, label: localLabel(withDefault, fallbackName) };
+    localTags[normalized] = { input: withDefault, label: localLabel(withDefault, fallbackName, bootstrap) };
     await set({ localTags, queue: [...queue.filter((q) => normalizedOf(q) !== normalized), withDefault] });
     await updateBadge();
     await broadcast({ type: "taw:refresh" });
@@ -303,13 +344,84 @@ async function refreshBootstrap(adoptSettings = false): Promise<Bootstrap | null
     if (adoptSettings) {
       const local = await getSettings();
       // Site toggles are per browser. The rest follows the account.
-      await set({ settings: { ...remote, disabledSites: local.disabledSites, enabledSites: local.enabledSites, cloudSync: local.cloudSync } });
+      const kept = Object.fromEntries(LOCAL_SETTINGS.map((k) => [k, local[k]]));
+      await set({ settings: { ...DEFAULT_SETTINGS, ...remote, ...kept } });
+    } else if (remote?.theme) {
+      // The theme can be set from the website (Settings → Display), so pick it up on every refresh, not just at startup.
+      const local = await getSettings();
+      if (local.theme !== remote.theme) await set({ settings: { ...local, theme: remote.theme } });
     }
     return bootstrap;
   } catch {
     return (await get("bootstrap")).bootstrap ?? null;
   }
 }
+
+// ---- The panel's library: read-only views of the dashboard. ----
+
+async function load<T>(path: string): Promise<Loaded<T>> {
+  try {
+    return { data: await call<T>(path) };
+  } catch (err) {
+    if (err instanceof AuthError) return { data: null, error: "signedOut" };
+    if (err instanceof NetworkError) return { data: null, error: "offline" };
+    return { data: null, error: (err as Error).message };
+  }
+}
+
+async function library(cached?: boolean): Promise<Loaded<Library>> {
+  const { library: last, token } = await get("library", "token");
+  if (!token) return { data: null, error: "signedOut" };
+  if (cached) return { data: last ?? null, cached: true };
+  const fresh = await load<Library>("/api/extension/library");
+  if (fresh.data) await set({ library: fresh.data });
+  // Offline, the last copy is better than nothing. It says so.
+  return fresh.data ? fresh : last && fresh.error === "offline" ? { data: last, cached: true, error: "offline" } : fresh;
+}
+
+// ---- Where the toolbar icon opens TagAWallet ----
+
+/**
+ * Kept in memory as well as in settings: a page's "open this" has to call sidePanel.open synchronously,
+ * and reading settings first would wait long enough to lose the click's user gesture.
+ */
+let panelMode: Settings["panelMode"] | undefined;
+void getSettings().then((s) => { panelMode ??= s.panelMode; });
+
+/** Side mode lets Chrome open the side panel on click. Float mode handles the click to show the panel over the page. */
+async function applyPanelMode(mode: Settings["panelMode"]) {
+  panelMode = mode;
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: mode === "side" }).catch(() => {});
+}
+
+const ADDRESS_KINDS = new Set(["evm", "solana", "bitcoin"]);
+/** A page's route is checked like any other input: known views, and only short plain strings. */
+function validRoute(r: unknown): r is Route {
+  const x = r as Record<string, unknown> | null;
+  if (!x || typeof x !== "object") return false;
+  const short = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
+  if (x.view === "tag" || x.view === "wallet") return short(x.address, 128) && ADDRESS_KINDS.has(x.kind as string);
+  if (x.view === "collection") return (x.kind === "list" || x.kind === "entity") && short(x.id, 64) && short(x.name, 200);
+  return false;
+}
+
+chrome.action.onClicked.addListener((tab) => {
+  void trackEvent("panel_open");
+  // Pages an extension can't draw on (browser pages, the web store) get the side panel instead.
+  // This must happen before any await, while the click still counts as a user gesture.
+  if (!tab.id || !/^https?:/.test(tab.url ?? "") || /^https:\/\/chrome(webstore)?\.google\.com\//.test(tab.url ?? "")) {
+    if (tab.windowId !== undefined) void chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+    return;
+  }
+  const tabId = tab.id;
+  void (async () => {
+    // The click grants activeTab, so the script can go in even on a site that isn't turned on.
+    const shown = await chrome.tabs.sendMessage(tabId, { type: "taw:togglePanel" } satisfies TabMessage).then(() => true, () => false);
+    if (shown) return;
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }).catch(() => {});
+    await chrome.tabs.sendMessage(tabId, { type: "taw:togglePanel" } satisfies TabMessage).catch(() => {});
+  })();
+});
 
 async function trackEvent(name: string, value?: number) {
   const { token } = await get("token");
@@ -338,7 +450,9 @@ async function handle(message: Message): Promise<unknown> {
       await set({ settings: next });
       await syncContentScripts();
       await broadcast({ type: "taw:settings" });
-      const { disabledSites: _d, enabledSites: _e, cloudSync: _c, ...synced } = message.patch;
+      await updateBadge();
+      if (message.patch.panelMode) await applyPanelMode(next.panelMode);
+      const synced = Object.fromEntries(Object.entries(message.patch).filter(([k]) => !(LOCAL_SETTINGS as readonly string[]).includes(k)));
       if (Object.keys(synced).length && next.cloudSync) await call("/api/extension/settings", { method: "PATCH", body: synced }).catch(() => {});
       if (message.patch.cloudSync) void flushQueue();
       return next;
@@ -364,20 +478,75 @@ async function handle(message: Message): Promise<unknown> {
     case "signOut": {
       const { token } = await get("token");
       if (token) await fetch(`${API}/api/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
-      await chrome.storage.local.remove(["token", "bootstrap", "cache", "handleIndex", "authExpired"]);
+      await chrome.storage.local.remove(["token", "bootstrap", "cache", "handleIndex", "authExpired", "library"]);
       await updateBadge();
       await broadcast({ type: "taw:refresh" });
       return true;
     }
     case "track": return trackEvent(message.name, message.value);
+    case "library": return library(message.cached);
+    case "collection": return load<Collection>(`/api/extension/collection?kind=${message.kind}&id=${encodeURIComponent(message.id)}`);
+    case "search": return load<SearchResult>(`/api/extension/search?q=${encodeURIComponent(message.q.slice(0, 200))}`);
+    case "wallet": return /^[a-f0-9]{24}$/i.test(message.id) ? load<WalletFiling>(`/api/extension/wallet?id=${message.id}`) : { data: null, error: "Pick a wallet." };
     case "open": return chrome.tabs.create({ url: API + message.path });
   }
 }
 
-chrome.runtime.onMessage.addListener((message: Message, _sender, reply) => {
+chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {
+  if (message.type === "openRoute") {
+    const tab = sender.tab;
+    // Only a page's content script asks this, never one of our own pages.
+    if (!tab?.id || tab.windowId === undefined || sender.url?.startsWith(chrome.runtime.getURL("")) || !validRoute(message.route)) { reply({ opened: false }); return false; }
+    if (panelMode !== "side") { reply({ opened: false }); return false; }
+    // Called before anything else, while the click on the page still counts as a user gesture.
+    const opening = chrome.sidePanel.open({ windowId: tab.windowId });
+    const tabId = tab.id;
+    void chrome.storage.session.set({ [`route:${tabId}`]: message.route });
+    void chrome.runtime.sendMessage({ type: "taw:route", tabId, route: message.route } satisfies PanelMessage).catch(() => {});
+    opening.then(() => reply({ opened: true }), () => reply({ opened: false }));
+    return true;
+  }
+  if (message.type === "takeRoute") {
+    // Our side panel collects what a page asked for before it was open. Pages can't read it back.
+    if (!sender.url?.startsWith(chrome.runtime.getURL("panel.html"))) { reply(null); return false; }
+    const key = `route:${message.tabId}`;
+    void chrome.storage.session.get(key).then(async (r) => { await chrome.storage.session.remove(key); reply(r[key] ?? null); });
+    return true;
+  }
+  // Both need the sender's tab, which only the listener sees.
+  if (message.type === "floatNonce" || message.type === "checkFloat") {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined || typeof message.nonce !== "string") { reply(false); return false; }
+    const key = `float:${tabId}`;
+    if (message.type === "floatNonce") {
+      // Only the content script, which runs in the page itself, may register one. Never an extension frame.
+      if (sender.url?.startsWith(chrome.runtime.getURL(""))) { reply(false); return false; }
+      void chrome.storage.session.set({ [key]: message.nonce }).then(() => reply(true));
+      return true;
+    }
+    // The check must come from our own panel page, framed in that same tab.
+    if (!sender.url?.startsWith(chrome.runtime.getURL("panel.html"))) { reply(false); return false; }
+    void chrome.storage.session.get(key).then((r) => reply(!!message.nonce && r[key] === message.nonce));
+    return true;
+  }
+  if (message.type === "pageSummary") {
+    // Only tabs the content script runs in can report, so the tab id always comes from the sender.
+    if (sender.tab?.id !== undefined) void storePage(sender.tab.id, message.summary);
+    reply(true);
+    return false;
+  }
   handle(message).then(reply, (err) => reply({ ok: false, error: String(err?.message ?? err) }));
   return true;
 });
+
+// The badge follows the tab in front. A navigation clears the old page's count until the new page reports.
+chrome.tabs.onActivated.addListener(({ tabId }) => void updateBadge(tabId));
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "loading") void chrome.storage.session.remove(pageKey(tabId)).then(() => updateBadge(tabId));
+  // A new address means a new document, so any floating frame from the old one is gone.
+  if (info.url) void chrome.storage.session.remove(`float:${tabId}`);
+});
+chrome.tabs.onRemoved.addListener((tabId) => void chrome.storage.session.remove([pageKey(tabId), `float:${tabId}`, `route:${tabId}`]));
 
 // The token arrives only from our own site, over the channel the manifest allows.
 chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
@@ -388,6 +557,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
   (async () => {
     await chrome.storage.local.remove("handleIndex");
     await chrome.storage.local.remove("authExpired");
+    await chrome.storage.local.remove("library"); // Another account's lists must never show.
     await set({ token: message.token, cache: {} });
     await refreshBootstrap(true);
     await flushQueue();
@@ -402,6 +572,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
 // ---- Right-click: tag a selected address on any page. The click grants activeTab, so no site access is needed. ----
 
 function setupBackgroundJobs() {
+  void getSettings().then((s) => applyPanelMode(s.panelMode));
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: MENU_ID, title: "Tag “%s” with TagAWallet", contexts: ["selection"] });
   });
@@ -421,6 +592,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MENU_ID && info.selectionText) void tagSelection(tab, info.frameId, info.selectionText);
 });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === FLUSH_ALARM) void flushQueue(); });
+// A keyboard shortcut counts as a user gesture, so it may open the panel directly.
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === "open-side-panel" && tab?.windowId !== undefined) void chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+});
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   setupBackgroundJobs();

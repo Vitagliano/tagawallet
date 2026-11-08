@@ -16,7 +16,7 @@ await build({
   root, configFile: false, logLevel: "warn", define, plugins: [react()],
   build: {
     outDir, emptyOutDir: true,
-    rollupOptions: { input: { popup: resolve(root, "popup.html"), options: resolve(root, "options.html"), welcome: resolve(root, "welcome.html") } },
+    rollupOptions: { input: { panel: resolve(root, "panel.html"), options: resolve(root, "options.html"), welcome: resolve(root, "welcome.html") } },
   },
 });
 for (const name of ["background", "content"]) {
@@ -36,18 +36,24 @@ const manifest = {
   version: "1.0.0",
   description: "Privately tag wallet addresses and recognize who's behind them as you browse.",
   icons: { 16: "icons/16.png", 32: "icons/32.png", 48: "icons/48.png", 128: "icons/128.png" },
-  action: { default_popup: "popup.html", default_title: "TagAWallet" },
+  // No popup: a click opens the panel, floating over the page or in the side panel (the person's choice).
+  action: { default_title: "TagAWallet" },
   options_page: "options.html",
   background: { service_worker: "background.js" },
   // `scripting` registers the content script only on sites the person has enabled.
   // `contextMenus` adds "Tag with TagAWallet" on selected text. `alarms` retries queued tags while the worker sleeps.
-  permissions: ["storage", "activeTab", "scripting", "contextMenus", "alarms"],
+  // `sidePanel` hosts the panel when the person docks it to the side.
+  permissions: ["storage", "activeTab", "scripting", "contextMenus", "alarms", "sidePanel"],
+  side_panel: { default_path: "panel.html" },
+  // The floating panel is this page, framed over the site. It only draws for a frame our content script placed.
+  web_accessible_resources: [{ resources: ["panel.html"], matches: ["https://*/*", ...(localDev ? ["http://localhost/*"] : [])] }],
   // Nothing is granted at install. Each origin is requested when the person turns a site on.
   optional_host_permissions: ["https://*/*", ...(localDev ? ["http://localhost/*"] : [])],
   // Lets only the TagAWallet site hand the extension its session after sign-in.
   externally_connectable: { matches: [`${new URL(apiBase).origin}/*`] },
   commands: {
     _execute_action: { suggested_key: { default: "Alt+Shift+T" }, description: "Open TagAWallet" },
+    "open-side-panel": { suggested_key: { default: "Alt+Shift+P" }, description: "Open the TagAWallet side panel" },
   },
 };
 // Test builds pre-grant the fixture origin, because a robot can't click Chrome's permission prompt.
