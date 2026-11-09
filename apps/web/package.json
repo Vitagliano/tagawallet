@@ -10,8 +10,10 @@
     "test": "echo 'web is covered by the root e2e suite'"
   },
   "dependencies": {
+    "@better-auth/mongo-adapter": "^1.7.18",
     "@hookform/resolvers": "^5.2.0",
     "@tagawallet/shared": "workspace:*",
+    "better-auth": "^1.7.18",
     "mongodb": "^7.8.0",
     "next": "^16.4.3",
     "react": "^19.3.1",
