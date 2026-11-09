@@ -2,16 +2,15 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema, registerSchema, passwordSchema, emailSchema } from "@tagawallet/shared";
-import { signWithSolana, solanaProvider } from "@/lib/solana-client";
 import { z } from "zod";
-import { api, ClientError } from "@/lib/client";
+import { authClient } from "@/lib/auth-client";
 import { Button, ErrorNote, Field, Input, Logo } from "./ui";
 
-export function AuthFrame({ title, children, footer }: { title: string; children: React.ReactNode; footer?: React.ReactNode }) {
+export function AuthFrame ({ title, children, footer }: { title: string; children: React.ReactNode; footer?: React.ReactNode }) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center px-4 py-10">
       <Link href="/" className="mb-8"><Logo className="text-lg" /></Link>
@@ -25,53 +24,18 @@ export function AuthFrame({ title, children, footer }: { title: string; children
 // Only same-site paths, so a crafted link can't bounce someone elsewhere after sign-in.
 const safeNext = (next: string | null) => (next && /^\/(?![/\\])/.test(next) ? next : "/dashboard");
 
-function ExternalSignIn({ next }: { next: string }) {
-  const [providers, setProviders] = useState<{ google: boolean; x: boolean } | null>(null);
-  const [error, setError] = useState("");
-  const [hasSolana, setHasSolana] = useState(false);
-  useEffect(() => { api("/api/auth/providers").then(setProviders); setHasSolana(!!solanaProvider()); }, []);
-  async function solana() {
-    setError("");
-    try {
-      const { message, nonce } = await api("/api/auth/wallet");
-      const { address, signature } = await signWithSolana(message);
-      await api("/api/auth/wallet", { body: { address, signature, nonce, chain: "solana" } });
-      window.location.assign(next);
-    } catch (e) { setError((e as Error).message); }
+function authErrorMessage (err: { message?: string; code?: string; status?: number } | null | undefined, fallback: string) {
+  if (!err) return fallback;
+  if (err.code === "USER_ALREADY_EXISTS" || /already exists|already registered/i.test(err.message ?? "")) {
+    return "An account with that email already exists.";
   }
-  async function wallet() {
-    setError("");
-    try {
-      const eth = (window as any).ethereum;
-      if (!eth) throw new Error("No browser wallet found.");
-      const [address] = await eth.request({ method: "eth_requestAccounts" });
-      const { message, nonce } = await api("/api/auth/wallet");
-      const signature = await eth.request({ method: "personal_sign", params: [message, address] });
-      await api("/api/auth/wallet", { body: { address, signature, nonce } });
-      window.location.assign(next);
-    } catch (e) { setError((e as Error).message); }
+  if (err.status === 403 || /verif/i.test(err.message ?? "")) {
+    return err.message || "Confirm your email before signing in.";
   }
-  const a = "inline-flex min-h-9 w-full items-center justify-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash";
-  return (
-    <div className="mt-5 space-y-2 border-t border-line pt-5">
-      {providers?.google && <a className={a} href="/api/auth/oauth/google/start">Continue with Google</a>}
-      {providers?.x && <a className={a} href="/api/auth/oauth/x/start">Continue with X</a>}
-      <Button className="w-full" onClick={wallet}>Sign in with a wallet signature</Button>
-      {hasSolana && <Button className="w-full" onClick={solana}>Sign in with a Solana wallet</Button>}
-      <p className="text-xs text-muted">A signature proves control of an address. We never ask for a seed phrase, private key or transaction.</p>
-      <ErrorNote>{error}</ErrorNote>
-    </div>
-  );
+  return err.message || fallback;
 }
 
-function applyError(err: unknown, setError: (name: never, e: { message: string }) => void, setProblem: (s: string) => void) {
-  if (!(err instanceof ClientError)) throw err;
-  const fields = err.data.fields as Record<string, string> | undefined;
-  if (fields) for (const [k, v] of Object.entries(fields)) setError(k as never, { message: v });
-  else setProblem(err.message);
-}
-
-export function LoginForm() {
+export function LoginForm () {
   const params = useSearchParams();
   const router = useRouter();
   const next = safeNext(params.get("next"));
@@ -81,8 +45,14 @@ export function LoginForm() {
     <AuthFrame title="Sign in" footer={<>New here? <Link className="underline" href={`/signup?next=${encodeURIComponent(next)}`}>Create an account</Link></>}>
       <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
         setProblem("");
-        try { await api("/api/auth/login", { body: v }); router.push(next); router.refresh(); }
-        catch (e) { applyError(e, setError as never, setProblem); }
+        const { error } = await authClient.signIn.email({ email: v.email, password: v.password, callbackURL: next });
+        if (error) {
+          if (/email|password/i.test(error.message ?? "")) setError("email", { message: "That email and password don't match." });
+          setProblem(authErrorMessage(error, "That email and password don't match."));
+          return;
+        }
+        router.push(next);
+        router.refresh();
       })}>
         <Field label="Email" error={errors.email?.message}><Input type="email" autoComplete="email" {...register("email")} /></Field>
         <Field label="Password" error={errors.password?.message}><Input type="password" autoComplete="current-password" {...register("password")} /></Field>
@@ -90,12 +60,11 @@ export function LoginForm() {
         <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Sign in</Button>
         <Link href="/forgot-password" className="block text-sm text-muted underline">Forgot your password?</Link>
       </form>
-      <ExternalSignIn next={next} />
     </AuthFrame>
   );
 }
 
-export function SignupForm() {
+export function SignupForm () {
   const params = useSearchParams();
   const router = useRouter();
   const next = safeNext(params.get("next"));
@@ -105,50 +74,75 @@ export function SignupForm() {
     <AuthFrame title="Create your account" footer={<>Have an account? <Link className="underline" href={`/login?next=${encodeURIComponent(next)}`}>Sign in</Link></>}>
       <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
         setProblem("");
-        try { await api("/api/auth/register", { body: v }); router.push(next); router.refresh(); }
-        catch (e) { applyError(e, setError as never, setProblem); }
+        // Better Auth requires `name`; use the email local-part until they set a display name in Settings.
+        const { error } = await authClient.signUp.email({
+          email: v.email,
+          password: v.password,
+          name: v.email.split("@")[0] || "User",
+          callbackURL: next,
+        });
+        if (error) {
+          if (/already|exists/i.test(error.message ?? "") || error.code === "USER_ALREADY_EXISTS") {
+            setError("email", { message: "Already registered. Try signing in." });
+          }
+          setProblem(authErrorMessage(error, "Couldn't create your account."));
+          return;
+        }
+        router.push(next);
+        router.refresh();
       })}>
-        <Field label="Name" error={errors.displayName?.message}><Input autoComplete="name" {...register("displayName")} /></Field>
         <Field label="Email" error={errors.email?.message}><Input type="email" autoComplete="email" {...register("email")} /></Field>
         <Field label="Password" error={errors.password?.message} hint="At least 10 characters"><Input type="password" autoComplete="new-password" {...register("password")} /></Field>
         <ErrorNote>{problem}</ErrorNote>
         <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Create account</Button>
         <p className="text-xs text-muted">Everything you add is private until you choose otherwise.</p>
       </form>
-      <ExternalSignIn next={next} />
     </AuthFrame>
   );
 }
 
-export function ForgotForm() {
+export function ForgotForm () {
   const [sent, setSent] = useState(false);
-  const { register, handleSubmit, formState: { errors } } = useForm({ resolver: zodResolver(z.object({ email: emailSchema })) });
+  const [problem, setProblem] = useState("");
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(z.object({ email: emailSchema })) });
   return (
     <AuthFrame title="Reset your password" footer={<Link className="underline" href="/login">Back to sign in</Link>}>
       {sent ? <p role="status" className="text-sm">If that email has an account, a reset link is on its way. It works for one hour.</p> : (
-        <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => { await api("/api/auth/reset-password", { body: v }); setSent(true); })}>
+        <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
+          setProblem("");
+          const { error } = await authClient.requestPasswordReset({
+            email: v.email,
+            redirectTo: `${window.location.origin}/reset-password`,
+          });
+          if (error) { setProblem(error.message || "Couldn't send a reset link."); return; }
+          setSent(true);
+        })}>
           <Field label="Email" error={errors.email?.message}><Input type="email" autoComplete="email" {...register("email")} /></Field>
-          <Button type="submit" variant="primary" className="w-full">Send reset link</Button>
+          <ErrorNote>{problem}</ErrorNote>
+          <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Send reset link</Button>
         </form>
       )}
     </AuthFrame>
   );
 }
 
-export function ResetForm() {
+export function ResetForm () {
   const token = useSearchParams().get("token") ?? "";
   const router = useRouter();
   const [problem, setProblem] = useState("");
-  const { register, handleSubmit, formState: { errors } } = useForm({ resolver: zodResolver(z.object({ password: passwordSchema })) });
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(z.object({ password: passwordSchema })) });
   return (
     <AuthFrame title="Choose a new password">
       <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
-        try { await api("/api/auth/reset-password/confirm", { body: { token, password: v.password } }); router.push("/login"); }
-        catch (e) { setProblem((e as Error).message); }
+        setProblem("");
+        if (!token) { setProblem("This reset link is missing its token."); return; }
+        const { error } = await authClient.resetPassword({ newPassword: v.password, token });
+        if (error) { setProblem(error.message || "This link has expired or was already used."); return; }
+        router.push("/login");
       })}>
         <Field label="New password" error={errors.password?.message} hint="At least 10 characters"><Input type="password" autoComplete="new-password" {...register("password")} /></Field>
         <ErrorNote>{problem}</ErrorNote>
-        <Button type="submit" variant="primary" className="w-full">Save password</Button>
+        <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Save password</Button>
       </form>
     </AuthFrame>
   );

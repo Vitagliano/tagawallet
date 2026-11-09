@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { use, useState } from "react";
-import { api } from "@/lib/client";
+import { authClient } from "@/lib/auth-client";
 import { Button, ErrorNote, Logo } from "@/components/ui";
 
 /** One click to confirm. A button, not an automatic request, so link scanners in mail apps can't use it up. */
-export default function VerifyEmail({ params }: { params: Promise<{ token: string }> }) {
+export default function VerifyEmail ({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
   const [state, setState] = useState<"idle" | "busy" | "done">("idle"), [error, setError] = useState("");
   return (
@@ -23,8 +23,11 @@ export default function VerifyEmail({ params }: { params: Promise<{ token: strin
           <p className="text-sm text-muted">This confirms the address belongs to you. It doesn&apos;t sign you in or change anything else.</p>
           <Button variant="primary" disabled={state === "busy"} onClick={async () => {
             setState("busy"); setError("");
-            try { await api("/api/auth/verify-email", { body: { token } }); setState("done"); }
-            catch (e) { setError((e as Error).message); setState("idle"); }
+            try {
+              const { error: err } = await authClient.verifyEmail({ query: { token } });
+              if (err) throw new Error(err.message || "This link has expired or was already used.");
+              setState("done");
+            } catch (e) { setError((e as Error).message); setState("idle"); }
           }}>Confirm email</Button>
           <ErrorNote>{error}</ErrorNote>
         </>

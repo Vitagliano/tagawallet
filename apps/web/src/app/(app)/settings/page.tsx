@@ -1,14 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { Suspense, useState, type ReactNode } from "react";
 import useSWR from "swr";
-import { truncateAddress } from "@tagawallet/shared";
 import { api, fetcher } from "@/lib/client";
+import { authClient } from "@/lib/auth-client";
 import { Button, ErrorNote, Field, Input, Modal, Pill } from "@/components/ui";
 import { AutoField, useToast } from "@/components/kit";
-import { signWithSolana, solanaProvider } from "@/lib/solana-client";
 
 const SECTIONS = [
   ["profile", "Profile"],
@@ -236,16 +235,6 @@ function Switch({ on, label, onChange }: { on: boolean; label: string; onChange:
   );
 }
 
-/** Proves control of an address by signing a message. Never a transaction. */
-async function linkWallet() {
-  const eth = (window as any).ethereum;
-  if (!eth) throw new Error("No browser wallet found. Install one, then try again.");
-  const [address] = await eth.request({ method: "eth_requestAccounts" });
-  const { message, nonce } = await api("/api/auth/wallet");
-  const signature = await eth.request({ method: "personal_sign", params: [message, address] });
-  await api("/api/auth/wallet", { body: { address, signature, nonce } });
-}
-
 /** Personal API keys for the read-only API. A new key is shown once, then only its prefix. */
 function ApiKeys() {
   const { data: keys, mutate } = useSWR<{ id: string; name: string; prefix: string; createdAt: string; lastUsedAt: string | null }[]>("/api/account/api-keys", fetcher);
@@ -296,22 +285,14 @@ function SettingsSkeleton() {
   );
 }
 
-async function linkSolanaWallet() {
-  const { message, nonce } = await api("/api/auth/wallet");
-  const { address, signature } = await signWithSolana(message);
-  await api("/api/auth/wallet", { body: { address, signature, nonce, chain: "solana" } });
-}
-
-export default function Settings() {
+export default function Settings () {
   return <Suspense><SettingsInner /></Suspense>;
 }
 
-function SettingsInner() {
+function SettingsInner () {
   const router = useRouter();
-  const params = useSearchParams();
   const { toast } = useToast();
   const { data, mutate } = useSWR("/api/auth/session", fetcher);
-  const { data: providers } = useSWR<{ google: boolean; x: boolean }>("/api/auth/providers", fetcher);
   const { data: dash } = useSWR("/api/dashboard", fetcher);
   const { data: entities } = useSWR<any[]>("/api/entities", fetcher);
   const { data: myLists } = useSWR<any[]>("/api/lists", fetcher);
@@ -319,28 +300,9 @@ function SettingsInner() {
   const user = data?.user;
   const [pwOpen, setPwOpen] = useState(false), [pw, setPw] = useState({ current: "", next: "" }), [pwErr, setPwErr] = useState("");
   const [del, setDel] = useState(false), [confirm, setConfirm] = useState(""), [password, setPassword] = useState(""), [delErr, setDelErr] = useState("");
-  const [signInErr, setSignInErr] = useState("");
-
-  // Coming back from linking Google or X.
-  useEffect(() => {
-    const linked = params.get("linked"), failed = params.get("link_error");
-    const name = (p: string | null) => (p === "x" ? "X" : "Google");
-    if (linked) toast(`${name(linked)} is linked. You can sign in with it now.`);
-    if (failed) setSignInErr(`That ${name(failed)} account is already linked to a different TagAWallet account.`);
-    if (linked || failed) router.replace(`/settings${location.hash}`, { scroll: false });
-  }, [params, router, toast]);
 
   if (!user) return <SettingsSkeleton />;
   const prefs = user.emailPrefs;
-  const has = (p: string) => user.identities.some((i: any) => i.provider === p);
-  const methods = (user.hasPassword ? 1 : 0) + user.identities.length;
-  const lastWay = methods <= 1;
-  const unlink = async (provider: string, address?: string) => {
-    setSignInErr("");
-    try { await api("/api/account/identities", { method: "DELETE", body: { provider, address } }); await mutate(); toast("Unlinked."); }
-    catch (e) { setSignInErr((e as Error).message); }
-  };
-  const wallets = user.identities.filter((i: any) => i.provider === "wallet");
   const published = entities?.filter((e) => e.visibility === "public") ?? [];
   const publicLists = myLists?.filter((l) => l.publishedAt && l.role === "owner") ?? [];
   const since = user.createdAt ? new Date(user.createdAt).toLocaleDateString(undefined, { month: "long", year: "numeric" }) : null;
@@ -412,41 +374,10 @@ function SettingsInner() {
           </div>
         </Section>
 
-        <Section id="sign-in" title="Sign-in methods" description="Ways you can get into this account. Keep at least one.">
-          <div>
-            <Row title="Password" detail={user.hasPassword ? "Set" : "Not set. Add one to sign in with your email."}>
-              <Button onClick={() => { setPwOpen(true); setPwErr(""); }}>{user.hasPassword ? "Change" : "Set password"}</Button>
-            </Row>
-            {providers?.google && (
-              <Row title="Google" detail={has("google") ? "Linked" : "Not linked"}>
-                {has("google")
-                  ? <Button variant="ghost" disabled={lastWay} onClick={() => unlink("google")}>Unlink</Button>
-                  : <a className="inline-flex min-h-9 items-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash" href="/api/auth/oauth/google/start">Link Google</a>}
-              </Row>
-            )}
-            {providers?.x && (
-              <Row title="X" detail={has("x") ? "Linked" : "Not linked"}>
-                {has("x")
-                  ? <Button variant="ghost" disabled={lastWay} onClick={() => unlink("x")}>Unlink</Button>
-                  : <a className="inline-flex min-h-9 items-center rounded-md border border-line bg-card px-3 text-sm font-medium hover:bg-wash" href="/api/auth/oauth/x/start">Link X</a>}
-              </Row>
-            )}
-            {wallets.map((w: any) => (
-              <Row key={w.address} title="Wallet" detail={<span className="addr" title={w.address}>{truncateAddress(w.address)}</span>}>
-                <Button variant="ghost" disabled={lastWay} onClick={() => unlink("wallet", w.address)}>Unlink</Button>
-              </Row>
-            ))}
-            <Row title={wallets.length ? "Another wallet" : "Wallet"} detail="Sign a message to prove you control it. Never a transaction.">
-              <Button onClick={async () => { setSignInErr(""); try { await linkWallet(); await mutate(); toast("Wallet linked."); } catch (e) { setSignInErr((e as Error).message); } }}>Link wallet</Button>
-            </Row>
-            {solanaProvider() && (
-              <Row title="Solana wallet" detail="Phantom or another Solana wallet. Sign a message, never a transaction.">
-                <Button onClick={async () => { setSignInErr(""); try { await linkSolanaWallet(); await mutate(); toast("Solana wallet linked."); } catch (e) { setSignInErr((e as Error).message); } }}>Link Solana wallet</Button>
-              </Row>
-            )}
-          </div>
-          {lastWay && <p className="mt-3 text-xs text-muted">This is your only way in, so it can&apos;t be removed.</p>}
-          <div className="mt-3"><ErrorNote>{signInErr}</ErrorNote></div>
+        <Section id="sign-in" title="Sign-in methods" description="Sign in with the email and password on this account.">
+          <Row title="Password" detail={user.hasPassword ? "Set" : "Not set. Add one to sign in with your email."}>
+            <Button onClick={() => { setPwOpen(true); setPwErr(""); }}>{user.hasPassword ? "Change" : "Set password"}</Button>
+          </Row>
         </Section>
 
         <Section id="extension" title="Browser extension" description="Your names show up next to addresses on explorers, X and trading tools. Page content never leaves your browser.">
@@ -521,8 +452,19 @@ function SettingsInner() {
       <Modal open={pwOpen} onClose={() => setPwOpen(false)} title={user.hasPassword ? "Change password" : "Set a password"}>
         <form className="space-y-3" onSubmit={async (e) => {
           e.preventDefault(); setPwErr("");
-          try { await api("/api/account", { method: "PATCH", body: { password: pw } }); setPw({ current: "", next: "" }); setPwOpen(false); await mutate(); toast("Password updated."); }
-          catch (err) { setPwErr((err as Error).message); }
+          try {
+            if (user.hasPassword) {
+              const { error } = await authClient.changePassword({
+                currentPassword: pw.current,
+                newPassword: pw.next,
+                revokeOtherSessions: true,
+              });
+              if (error) throw new Error(error.message || "Couldn't update your password.");
+            } else {
+              await api("/api/account", { method: "PATCH", body: { password: { next: pw.next } } });
+            }
+            setPw({ current: "", next: "" }); setPwOpen(false); await mutate(); toast("Password updated.");
+          } catch (err) { setPwErr((err as Error).message); }
         }}>
           {user.hasPassword && <Field label="Current password"><Input type="password" autoComplete="current-password" value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} /></Field>}
           <Field label="New password" hint="At least 10 characters"><Input type="password" autoComplete="new-password" value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} /></Field>

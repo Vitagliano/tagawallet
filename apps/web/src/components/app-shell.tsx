@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useState } from "react";
 import { api } from "@/lib/client";
+import { authClient } from "@/lib/auth-client";
 import { Logo } from "./ui";
 import { Menu, menuItem, ToastProvider } from "./kit";
 import { WalletDrawer } from "./wallet-drawer";
@@ -38,7 +39,7 @@ export function AppShell({ children, user }: { children: React.ReactNode; user: 
   const [palette, setPalette] = useState(false);
   const active = (href: string) => path === href || path.startsWith(href + "/");
   const tab = (on: boolean) => `inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-medium transition ${on ? "bg-card text-ink" : "text-muted hover:bg-card/60 hover:text-ink"}`;
-  const signOut = async () => { await api("/api/auth/logout", { method: "POST" }); router.push("/login"); router.refresh(); };
+  const signOut = async () => { await authClient.signOut(); router.push("/login"); router.refresh(); };
   const initial = user.displayName.trim()[0]?.toUpperCase() ?? "?";
 
   return (

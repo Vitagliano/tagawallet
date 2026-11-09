@@ -21,7 +21,6 @@ export const passwordSchema = z.string().min(10, "Use at least 10 characters").m
 export const registerSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
-  displayName: cleanText(80).min(1, "Add a name"),
 });
 export const loginSchema = z.object({ email: emailSchema, password: z.string().min(1).max(200) });
 
