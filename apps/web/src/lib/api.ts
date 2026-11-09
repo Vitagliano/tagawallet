@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError, type ZodType } from "zod";
-import { SESSION_COOKIE, sha256, userFromToken, type User } from "./auth";
+import { sha256, userFromRequest, type User } from "./auth";
 import { getDb } from "./db";
 
 export class ApiError extends Error {
@@ -82,8 +82,7 @@ async function run<P>(req: NextRequest, arg: RouteArg<P> | undefined, opts: Opts
   const headers = opts.cors ? corsHeaders(req) : {};
   try {
     assertSameOrigin(req);
-    const token = bearer(req) ?? req.cookies.get(SESSION_COOKIE)?.value;
-    const user = await userFromToken(token);
+    const user = await userFromRequest(req);
     if (opts.auth !== false && !user) throw new ApiError(401, "Please sign in.");
     if (opts.rate) await rateLimit(opts.rate, user?._id.toString() ?? clientIp(req));
     const params = (arg ? await arg.params : {}) as P;

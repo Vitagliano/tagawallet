@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { APIError } from "better-auth/api";
 import { ApiError, route } from "@/lib/api";
-import { publicUser, sessionCookie, verifyPassword, hashPassword } from "@/lib/auth";
+import { auth, publicUser } from "@/lib/auth";
 import { passwordSchema } from "@tagawallet/shared";
 import { getDb } from "@/lib/db";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
@@ -24,19 +25,33 @@ const patch = z.object({
 
 const RESERVED = new Set(["admin", "api", "app", "dashboard", "settings", "support", "help", "login", "signup", "tagawallet", "team", "about", "moderator", "root", "www"]);
 
-export const PATCH = route(async ({ body, user }) => {
-  const { password, ...fields } = await body(patch);
+export const PATCH = route(async ({ body, user, req }) => {
+  const { password, displayName, ...fields } = await body(patch);
   const set: Record<string, unknown> = { ...fields, updatedAt: new Date() };
+  if (displayName !== undefined) {
+    set.name = displayName;
+    set.displayName = displayName;
+  }
   // The extension keeps its own synced settings; its theme follows the account's choice when the choice covers it.
   if (fields.theme || fields.themeScope) {
     const theme = fields.theme ?? user.theme ?? "system", scope = fields.themeScope ?? user.themeScope ?? "both";
     set.extensionSettings = { ...DEFAULT_SETTINGS, ...user.extensionSettings, theme: scope === "web" ? "system" : theme };
   }
   if (password) {
-    if (user.passwordHash && !(await verifyPassword(password.current ?? "", user.passwordHash))) {
-      throw new ApiError(401, "Your current password is incorrect.");
+    try {
+      await auth.api.changePassword({
+        body: {
+          currentPassword: password.current ?? "",
+          newPassword: password.next,
+          revokeOtherSessions: true,
+        },
+        headers: req.headers,
+      });
+    } catch (err) {
+      if (err instanceof APIError) throw new ApiError(401, "Your current password is incorrect.");
+      throw err;
     }
-    set.passwordHash = await hashPassword(password.next);
+    set.authProviders = [...new Set([...(user.authProviders as string[] ?? []), "password"])];
   }
   const db = await getDb();
   if (fields.handle && fields.handle !== user.handle) {
@@ -46,38 +61,22 @@ export const PATCH = route(async ({ body, user }) => {
     }
   }
   if (fields.profilePublic && !(fields.handle ?? user.handle)) throw new ApiError(422, "Pick a handle before turning on your public profile.", { fields: { handle: "Pick a handle first." } });
-  await db.collection("users").updateOne({ _id: user._id }, { $set: set, ...(password ? { $addToSet: { authProviders: "password" } } : {}) });
+  await db.collection("users").updateOne({ _id: user._id }, { $set: set });
   return { user: publicUser({ ...user, ...set } as typeof user) };
 });
 
 /** Removes the account and everything it owns. Lists others collaborate on go too: the owner's data is the owner's. */
-export const DELETE = route(async ({ body, user }) => {
+export const DELETE = route(async ({ body, req }) => {
   const { confirm, password } = await body(z.object({ confirm: z.literal("DELETE"), password: z.string().max(200).optional() }));
   void confirm;
-  if (user.passwordHash && !(await verifyPassword(password ?? "", user.passwordHash))) {
-    throw new ApiError(401, "Your password is incorrect.");
+  try {
+    await auth.api.deleteUser({
+      body: { password },
+      headers: req.headers,
+    });
+  } catch (err) {
+    if (err instanceof APIError) throw new ApiError(401, "Your password is incorrect.");
+    throw err;
   }
-  const db = await getDb();
-  const id = user._id;
-  const [wallets, lists, entities] = await Promise.all(["wallets", "lists", "entities"].map((c) =>
-    db.collection(c).find({ ownerId: id }, { projection: { _id: 1 } }).toArray().then((r) => r.map((d) => d._id))));
-  await Promise.all([
-    db.collection("wallet_list_memberships").deleteMany({ $or: [{ walletId: { $in: wallets } }, { listId: { $in: lists } }] }),
-    db.collection("wallet_entity_links").deleteMany({ $or: [{ walletId: { $in: wallets } }, { entityId: { $in: entities } }] }),
-    db.collection("wallets").deleteMany({ ownerId: id }),
-    db.collection("lists").deleteMany({ ownerId: id }),
-    db.collection("entities").deleteMany({ ownerId: id }),
-    db.collection("activity").deleteMany({ $or: [{ userId: id }, { listId: { $in: lists } }] }),
-    db.collection("verifications").deleteMany({ entityId: { $in: entities } }),
-    db.collection("events").deleteMany({ userId: id }),
-    db.collection("sessions").deleteMany({ userId: id }),
-    db.collection("api_keys").deleteMany({ userId: id }),
-    db.collection("tokens").deleteMany({ userId: id }),
-    db.collection("lists").updateMany({ "collaborators.userId": id }, { $pull: { collaborators: { userId: id } } } as never),
-    db.collection("reports").updateMany({ reporterId: id }, { $set: { reporterId: null } }),
-  ]);
-  await db.collection("users").deleteOne({ _id: id });
-  const res = NextResponse.json({ ok: true });
-  res.headers.append("Set-Cookie", sessionCookie("", 0));
-  return res;
+  return NextResponse.json({ ok: true });
 }, { rate: { name: "delete-account", limit: 5, windowSec: 3600 } });

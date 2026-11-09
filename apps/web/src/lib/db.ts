@@ -1,35 +1,55 @@
 import { MongoClient, type Db } from "mongodb";
 
-const globalForMongo = globalThis as unknown as { __mongo?: Promise<Db> };
+const uri = process.env.MONGODB_URI;
+if (!uri) throw new Error("MONGODB_URI is not set");
 
-async function connect(): Promise<Db> {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error("MONGODB_URI is not set");
-  const client = await new MongoClient(uri, { maxPoolSize: 20 }).connect();
-  const db = client.db();
-  await ensureIndexes(db);
-  return db;
+const globalForMongo = globalThis as unknown as {
+  __mongoClient?: MongoClient;
+  __mongoReady?: Promise<Db>;
+};
+
+/** Shared client for Better Auth and the rest of the app. */
+export const mongoClient = globalForMongo.__mongoClient ?? new MongoClient(uri, { maxPoolSize: 20 });
+globalForMongo.__mongoClient = mongoClient;
+
+export const mongoDb = mongoClient.db();
+
+async function ready (): Promise<Db> {
+  await mongoClient.connect();
+  await ensureIndexes(mongoDb);
+  return mongoDb;
 }
 
-export function getDb(): Promise<Db> {
-  globalForMongo.__mongo ??= connect().catch((err) => {
-    globalForMongo.__mongo = undefined;
+export function getDb (): Promise<Db> {
+  globalForMongo.__mongoReady ??= ready().catch((err) => {
+    globalForMongo.__mongoReady = undefined;
     throw err;
   });
-  return globalForMongo.__mongo;
+  return globalForMongo.__mongoReady;
 }
 
-async function ensureIndexes(db: Db) {
+async function ensureIndexes (db: Db) {
   // Accounts from before email verification existed are treated as verified, so nobody is locked out.
-  await db.collection("users").updateMany({ email: { $type: "string" }, emailVerifiedAt: { $exists: false } }, [{ $set: { emailVerifiedAt: "$createdAt" } }]).catch(() => {});
+  await db.collection("users").updateMany(
+    { email: { $type: "string" }, emailVerified: { $exists: false }, emailVerifiedAt: { $exists: true } },
+    [{ $set: { emailVerified: { $ne: ["$emailVerifiedAt", null] } } }],
+  ).catch(() => {});
   await Promise.all([
     // Partial: X and wallet sign-ins have no email.
     db.collection("users").createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } }),
     db.collection("users").createIndex({ "identities.provider": 1, "identities.subject": 1 }),
     db.collection("users").createIndex({ handle: 1 }, { unique: true, partialFilterExpression: { handle: { $type: "string" } } }),
+    // Extension bearer sessions (web sessions live in Better Auth's `session` collection).
     db.collection("sessions").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("sessions").createIndex({ userId: 1 }),
+    db.collection("session").createIndex({ token: 1 }, { unique: true }),
+    db.collection("session").createIndex({ userId: 1 }),
+    db.collection("session").createIndex({ expiresAt: 1 }),
+    db.collection("account").createIndex({ userId: 1 }),
+    db.collection("account").createIndex({ providerId: 1, accountId: 1 }, { unique: true }),
+    db.collection("verification").createIndex({ identifier: 1 }),
+    db.collection("verification").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("tokens").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("tokens").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("rate_limits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
