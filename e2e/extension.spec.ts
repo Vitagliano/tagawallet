@@ -122,7 +122,6 @@ test("an untagged address opens the tag form in the floating panel, which asks a
 test("connecting hands the session to the extension, and a tag saves from the page", async () => {
   const page = await context.newPage();
   await page.goto(`/signup`.replace(/^/, "http://localhost:3200"));
-  await page.getByLabel("Name").fill("Eve");
   await page.getByLabel("Email").fill(`eve${Date.now()}@example.test`);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();

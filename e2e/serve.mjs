@@ -11,7 +11,15 @@ const fixture = createServer((req, res) => {
 }).listen(3201);
 const next = spawn("pnpm", ["--filter", "@tagawallet/web", "exec", "next", "start", "-p", "3200"], {
   stdio: "inherit",
-  env: { ...process.env, MONGODB_URI: mongo.getUri("tagawallet_e2e"), APP_URL: "http://localhost:3200", ADMIN_EMAILS: "moderator@example.test", NODE_ENV: "production" },
+  env: {
+    ...process.env,
+    MONGODB_URI: mongo.getUri("tagawallet_e2e"),
+    APP_URL: "http://localhost:3200",
+    BETTER_AUTH_URL: "http://localhost:3200",
+    BETTER_AUTH_SECRET: "e2e-better-auth-secret-at-least-32-chars!!",
+    ADMIN_EMAILS: "moderator@example.test",
+    NODE_ENV: "production",
+  },
 });
 const stop = async () => { next.kill(); fixture.close(); await mongo.stop(); process.exit(0); };
 process.on("SIGTERM", stop);

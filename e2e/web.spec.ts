@@ -12,10 +12,10 @@ test("first-run web flow in the browser, with no CSP violations", async ({ page 
   await expect(page.getByRole("heading", { name: /Know who/ })).toBeVisible();
   await page.getByRole("link", { name: "Get started" }).click();
 
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByText("Add a name")).toBeVisible();
-  await page.getByLabel("Name").fill("Dana");
   await page.getByLabel("Email").fill(`dana${Date.now()}@example.test`);
+  await page.getByLabel("Password").fill("short");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByText("Use at least 10 characters")).toBeVisible();
   await page.getByLabel("Password").fill("correct-horse-battery");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/dashboard/);
@@ -220,8 +220,11 @@ test("phone width has no horizontal page scroll", async ({ page }) => {
 
 test("open redirects are refused after sign-in", async ({ page }) => {
   const email = `r${Date.now()}@example.test`;
-  await page.request.post("/api/auth/register", { data: { email, password: "correct-horse-battery", displayName: "R" } });
-  await page.request.post("/api/auth/logout");
+  await page.request.post("/api/auth/sign-up/email", {
+    data: { email, password: "correct-horse-battery", name: email.split("@")[0] },
+    headers: { Origin: "http://localhost:3200" },
+  });
+  await page.request.post("/api/auth/sign-out", { data: {}, headers: { Origin: "http://localhost:3200" } });
   await page.goto("/login?next=//evil.example/x");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("correct-horse-battery");
@@ -231,7 +234,6 @@ test("open redirects are refused after sign-in", async ({ page }) => {
 
 test("import from the wallets page: columns are matched, previewed, then imported; a wallet's chain can be fixed", async ({ page }) => {
   await page.goto("/signup");
-  await page.getByLabel("Name").fill("Ivy");
   await page.getByLabel("Email").fill(`ivy${Date.now()}@example.test`);
   await page.getByLabel("Password").fill("correct-horse-battery");
   await page.getByRole("button", { name: "Create account" }).click();
@@ -269,7 +271,6 @@ test("import from the wallets page: columns are matched, previewed, then importe
 test("a new account sees a verify-email banner it can resend from or dismiss", async ({ page }) => {
   const email = `vera${Date.now()}@example.test`;
   await page.goto("/signup");
-  await page.getByLabel("Name").fill("Vera");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("correct-horse-battery");
   await page.getByRole("button", { name: "Create account" }).click();
