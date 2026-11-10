@@ -59,6 +59,8 @@ export const auth = betterAuth({
     enabled: true,
     minPasswordLength: 10,
     maxPasswordLength: 200,
+    // New accounts must confirm their address before they can sign in.
+    requireEmailVerification: true,
     revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, token }) => {
       const url = `${appUrl()}/reset-password?token=${encodeURIComponent(token)}`;
@@ -71,12 +73,14 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendOnSignUp: true,
+    sendOnSignIn: true,
+    autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, token }) => {
       const url = `${appUrl()}/verify-email/${encodeURIComponent(token)}`;
       void sendEmail(
         user.email,
         "Confirm your email for TagAWallet",
-        `Hi ${user.name || "there"},\n\nConfirm this is your email address:\n${url}\n\nThe link works for a few days. If you didn't create a TagAWallet account, ignore this email.`,
+        `Hi ${user.name || "there"},\n\nConfirm this is your email address to finish creating your account:\n${url}\n\nThe link works for a few days. If you didn't create a TagAWallet account, ignore this email.`,
       );
     },
   },

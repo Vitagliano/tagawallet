@@ -38,7 +38,7 @@ pnpm test:e2e
 - **Install buttons:** the home page's "Add to Chrome" buttons point at `NEXT_PUBLIC_EXTENSION_STORE_URL`. Until the store listing is live they go to `/extension`, which says it's coming.
 - **Supported sites:** served from `GET /api/extension/sites`. Admins edit the list at `/admin/sites` (or `PUT`, and `DELETE` to reset), without a new extension release.
 - **API:** people create read-only keys in Settings › API keys and call `/api/v1/*`. Docs are at `/docs/api`.
-- **Email verification:** new signups confirm their address before publishing, inviting by email or acting as an admin. Accounts created before this change are treated as verified.
+- **Email verification:** new signups must confirm their address before they can sign in. Publishing, inviting by email and admin still also require a confirmed address. Accounts created before this change are treated as verified.
 
 ## Decisions on the PRD's open questions
 

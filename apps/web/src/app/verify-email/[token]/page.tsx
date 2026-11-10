@@ -15,12 +15,12 @@ export default function VerifyEmail ({ params }: { params: Promise<{ token: stri
       <h1 className="pt-6 text-2xl font-semibold tracking-tight">{state === "done" ? "Email confirmed" : "Confirm your email"}</h1>
       {state === "done" ? (
         <>
-          <p role="status" className="text-sm text-muted">Thanks. You can now publish profiles and invite people by email.</p>
+          <p role="status" className="text-sm text-muted">Thanks. Your account is ready — you can sign in and start tagging wallets.</p>
           <Link className="inline-flex min-h-9 items-center rounded-md bg-accent px-3 text-sm font-medium text-accent-ink" href="/dashboard">Go to your wallets</Link>
         </>
       ) : (
         <>
-          <p className="text-sm text-muted">This confirms the address belongs to you. It doesn&apos;t sign you in or change anything else.</p>
+          <p className="text-sm text-muted">This confirms the address belongs to you and finishes creating your account.</p>
           <Button variant="primary" disabled={state === "busy"} onClick={async () => {
             setState("busy"); setError("");
             try {

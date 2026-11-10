@@ -40,13 +40,22 @@ export function LoginForm () {
   const router = useRouter();
   const next = safeNext(params.get("next"));
   const [problem, setProblem] = useState(params.get("error") ? "That sign-in didn't complete. Please try again." : "");
-  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(loginSchema) });
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
+  const [resent, setResent] = useState(false);
+  const { register, handleSubmit, setError, getValues, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(loginSchema) });
   return (
     <AuthFrame title="Sign in" footer={<>New here? <Link className="underline" href={`/signup?next=${encodeURIComponent(next)}`}>Create an account</Link></>}>
       <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
         setProblem("");
+        setUnverifiedEmail("");
+        setResent(false);
         const { error } = await authClient.signIn.email({ email: v.email, password: v.password, callbackURL: next });
         if (error) {
+          if (error.status === 403 || /verif/i.test(error.message ?? "")) {
+            setUnverifiedEmail(v.email);
+            setProblem("Confirm your email before signing in. Check your inbox for the link.");
+            return;
+          }
           if (/email|password/i.test(error.message ?? "")) setError("email", { message: "That email and password don't match." });
           setProblem(authErrorMessage(error, "That email and password don't match."));
           return;
@@ -57,6 +66,23 @@ export function LoginForm () {
         <Field label="Email" error={errors.email?.message}><Input type="email" autoComplete="email" {...register("email")} /></Field>
         <Field label="Password" error={errors.password?.message}><Input type="password" autoComplete="current-password" {...register("password")} /></Field>
         <ErrorNote>{problem}</ErrorNote>
+        {unverifiedEmail && (
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            disabled={resent}
+            onClick={async () => {
+              const email = unverifiedEmail || getValues("email");
+              const { error } = await authClient.sendVerificationEmail({ email, callbackURL: next });
+              if (error) { setProblem(error.message || "Couldn't send another link."); return; }
+              setResent(true);
+              setProblem(`Sent. Check ${email} for the link.`);
+            }}
+          >
+            {resent ? "Link sent" : "Resend confirmation link"}
+          </Button>
+        )}
         <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Sign in</Button>
         <Link href="/forgot-password" className="block text-sm text-muted underline">Forgot your password?</Link>
       </form>
@@ -66,15 +92,28 @@ export function LoginForm () {
 
 export function SignupForm () {
   const params = useSearchParams();
-  const router = useRouter();
   const next = safeNext(params.get("next"));
   const [problem, setProblem] = useState("");
-  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(registerSchema) });
+  const [pendingEmail, setPendingEmail] = useState("");
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(registerSchema) });
+
+  if (pendingEmail) {
+    return (
+      <AuthFrame title="Check your email" footer={<Link className="underline" href={`/login?next=${encodeURIComponent(next)}`}>Back to sign in</Link>}>
+        <p role="status" className="text-sm text-muted">
+          We sent a confirmation link to <span className="font-medium text-ink">{pendingEmail}</span>. Confirm it to finish creating your account, then sign in.
+        </p>
+        <p className="mt-4 text-sm text-muted">Nothing lands in your inbox? Check spam, or try signing in — we&apos;ll send another link if the address still needs confirming.</p>
+      </AuthFrame>
+    );
+  }
+
   return (
     <AuthFrame title="Create your account" footer={<>Have an account? <Link className="underline" href={`/login?next=${encodeURIComponent(next)}`}>Sign in</Link></>}>
       <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
         setProblem("");
         // Better Auth requires `name`; use the email local-part until they set a display name in Settings.
+        // With requireEmailVerification, a successful response has no session — existing emails also get 200.
         const { error } = await authClient.signUp.email({
           email: v.email,
           password: v.password,
@@ -82,20 +121,16 @@ export function SignupForm () {
           callbackURL: next,
         });
         if (error) {
-          if (/already|exists/i.test(error.message ?? "") || error.code === "USER_ALREADY_EXISTS") {
-            setError("email", { message: "Already registered. Try signing in." });
-          }
           setProblem(authErrorMessage(error, "Couldn't create your account."));
           return;
         }
-        router.push(next);
-        router.refresh();
+        setPendingEmail(v.email);
       })}>
         <Field label="Email" error={errors.email?.message}><Input type="email" autoComplete="email" {...register("email")} /></Field>
         <Field label="Password" error={errors.password?.message} hint="At least 10 characters"><Input type="password" autoComplete="new-password" {...register("password")} /></Field>
         <ErrorNote>{problem}</ErrorNote>
         <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Create account</Button>
-        <p className="text-xs text-muted">Everything you add is private until you choose otherwise.</p>
+        <p className="text-xs text-muted">We&apos;ll email you a link to confirm the address before you can sign in.</p>
       </form>
     </AuthFrame>
   );
