@@ -3,6 +3,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { closeE2eDb, signUpAndEnter } from "./helpers";
 
 const A1 = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const A2 = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
@@ -24,7 +25,7 @@ base.beforeAll(async () => {
   const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   extensionId = new URL(worker.url()).host;
 });
-base.afterAll(async () => { await context?.close(); });
+base.afterAll(async () => { await context?.close(); await closeE2eDb(); });
 
 const test = base;
 test.describe.configure({ mode: "serial" });
@@ -121,11 +122,7 @@ test("an untagged address opens the tag form in the floating panel, which asks a
 
 test("connecting hands the session to the extension, and a tag saves from the page", async () => {
   const page = await context.newPage();
-  await page.goto(`/signup`.replace(/^/, "http://localhost:3200"));
-  await page.getByLabel("Email").fill(`eve${Date.now()}@example.test`);
-  await page.getByLabel("Password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/dashboard/);
+  await signUpAndEnter(page, `eve${Date.now()}@example.test`);
   await page.goto(`http://localhost:3200/extension/connect?ext=${extensionId}`);
   await page.getByRole("button", { name: "Connect this browser" }).click();
   await expect(page.getByRole("status")).toContainText("Connected");

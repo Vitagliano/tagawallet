@@ -1,6 +1,6 @@
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { createHash } from "node:crypto";
-import { MongoClient } from "mongodb";
+import { closeE2eDb, e2eDb, markVerified } from "./helpers";
 
 const BASE = "http://localhost:3200";
 const A1 = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
@@ -9,11 +9,8 @@ const A3 = "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB";
 const PASSWORD = "correct-horse-battery";
 let n = 0;
 
-let mongo: MongoClient | null = null;
-const db = async () => (mongo ??= await new MongoClient("mongodb://127.0.0.1:3202/tagawallet_e2e").connect()).db();
-/** Stands in for clicking the link in the confirmation email. */
-const markVerified = async (email: string) => { await (await db()).collection("users").updateOne({ email }, { $set: { emailVerified: true } }); };
-test.afterAll(async () => { await mongo?.close(); });
+const db = e2eDb;
+test.afterAll(async () => { await closeE2eDb(); });
 
 const authHeaders = { Origin: BASE, Referer: `${BASE}/` };
 const signUp = (ctx: APIRequestContext, email: string) =>
@@ -27,7 +24,10 @@ async function account (email = `u${Date.now()}${n++}@example.test`, { verified 
   const ctx = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": `10.0.${n % 250}.${Date.now() % 250}` } });
   const res = await signUp(ctx, email);
   expect(res.status(), await res.text()).toBe(200);
-  if (verified) await markVerified(email);
+  if (verified) {
+    await markVerified(email);
+    await json(signIn(ctx, email));
+  }
   return { ctx, email };
 }
 
@@ -53,17 +53,24 @@ const resolve = (c: APIRequestContext, a: string) => json(c.post("/api/extension
 test("auth: session cookie is HttpOnly and SameSite, passwords aren't returned", async () => {
   const ctx = await request.newContext({ baseURL: BASE });
   const email = `c${Date.now()}@example.test`;
-  const res = await signUp(ctx, email);
+  const signup = await signUp(ctx, email);
+  expect(signup.status(), await signup.text()).toBe(200);
+  expect(await signup.text()).not.toMatch(/passwordHash|scrypt|"password"\s*:/);
+  // Sign-up does not create a session until the address is confirmed.
+  expect((await json(ctx.get("/api/auth/session"))).user).toBeNull();
+  expect((await signIn(ctx, email)).status()).toBe(403);
+  await markVerified(email);
+  const res = await signIn(ctx, email);
   const cookie = res.headers()["set-cookie"] ?? "";
   expect(cookie).toMatch(/HttpOnly/i); expect(cookie).toMatch(/SameSite=Lax/i);
   // Secure is only set when Better Auth sees an https base URL (not localhost e2e).
-  expect(await res.text()).not.toMatch(/passwordHash|scrypt|"password"\s*:/);
   expect((await json(ctx.get("/api/auth/session"))).user.email).toBe(email);
   await json(signOut(ctx));
   expect((await json(ctx.get("/api/auth/session"))).user).toBeNull();
   expect((await signIn(ctx, email, "wrong-password-x")).status()).toBe(401);
   await json(signIn(ctx, email));
-  expect((await signUp(ctx, email)).status()).toBeGreaterThanOrEqual(400);
+  // With requireEmailVerification, a second sign-up with the same email returns 200 (no enumeration).
+  expect((await signUp(ctx, email)).status()).toBe(200);
   expect((await ctx.post("/api/auth/sign-up/email", { data: { email: "s@example.test", password: "short", name: "x" }, headers: authHeaders })).status()).toBeGreaterThanOrEqual(400);
 });
 
@@ -616,30 +623,29 @@ test("extension sites: the built-in list covers Bitcoin, Solana and Blockscout e
   for (const s of ["mempool.space", "solana.fm", "blockscout.com", "opensea.io"]) expect(sites).toContain(s);
 });
 
-test("email verification: needed to publish and invite by email, confirmed by a one-time link, and required for admin", async () => {
+test("email verification: required to sign in, then needed to publish and invite by email, and required for admin", async () => {
   const { ctx, email } = await account(undefined, { verified: false });
-  expect((await json(ctx.get("/api/auth/session"))).user.emailVerified).toBe(false);
-  const e = await json(ctx.post("/api/entities", { data: { name: `Unverified ${Date.now()}`, type: "project" } }), 201);
-  const blocked = await ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } });
-  expect(blocked.status()).toBe(403);
-  expect(await blocked.json()).toMatchObject({ needsVerification: true });
-  const list = await newList(ctx, "Invites");
-  expect((await ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer", email: "friend@example.test" } })).status()).toBe(403);
-  await json(ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer" } })); // A link sends no email, so it's fine.
+  expect((await json(ctx.get("/api/auth/session"))).user).toBeNull();
+  expect((await signIn(ctx, email)).status()).toBe(403);
 
-  // Confirm the address the way the verify-email link would (Better Auth sets emailVerified).
   await markVerified(email);
+  await json(signIn(ctx, email));
   expect((await json(ctx.get("/api/auth/session"))).user.emailVerified).toBe(true);
+
+  const e = await json(ctx.post("/api/entities", { data: { name: `Verified ${Date.now()}`, type: "project" } }), 201);
   await json(ctx.post(`/api/entities/${e.id}/publish`, { data: { publish: true, acknowledge: true } }));
   expect((await json(ctx.post("/api/account/verify-email"))).alreadyVerified).toBe(true);
+  const list = await newList(ctx, "Invites");
+  await json(ctx.post(`/api/lists/${list.id}/members`, { data: { role: "viewer", email: "friend@example.test" } }));
 
-  // Typing an admin's address at signup grants nothing until it's confirmed.
+  // Typing an admin's address at signup grants nothing until it's confirmed and signed in.
   const users = (await db()).collection("users");
   await users.deleteOne({ email: "moderator@example.test" });
   await (await db()).collection("account").deleteMany({ accountId: "moderator@example.test" });
   const squatter = await request.newContext({ baseURL: BASE, extraHTTPHeaders: { "x-forwarded-for": "10.3.0.1" } });
   await json(signUp(squatter, "moderator@example.test"));
-  expect((await squatter.get("/api/admin/reports")).status()).toBe(403);
+  expect((await signIn(squatter, "moderator@example.test")).status()).toBe(403);
+  expect((await squatter.get("/api/admin/reports")).status()).toBe(401);
   await users.deleteOne({ email: "moderator@example.test" });
   await (await db()).collection("account").deleteMany({ accountId: "moderator@example.test" });
 });

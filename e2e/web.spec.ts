@@ -1,7 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { closeE2eDb, markVerified, signUpAndEnter } from "./helpers";
 
 const A1 = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const A2 = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
+const PASSWORD = "correct-horse-battery";
+
+test.afterAll(async () => { await closeE2eDb(); });
 
 test("first-run web flow in the browser, with no CSP violations", async ({ page }) => {
   const problems: string[] = [];
@@ -9,15 +13,22 @@ test("first-run web flow in the browser, with no CSP violations", async ({ page 
   page.on("pageerror", (e) => problems.push(e.message));
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Know who/ })).toBeVisible();
-  await page.getByRole("link", { name: "Get started" }).click();
+  await expect(page.getByRole("heading", { name: "TagAWallet" })).toBeVisible();
+  await page.getByRole("link", { name: "Join the dashboard" }).click();
 
-  await page.getByLabel("Email").fill(`dana${Date.now()}@example.test`);
+  const email = `dana${Date.now()}@example.test`;
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("short");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByText("Use at least 10 characters")).toBeVisible();
-  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await markVerified(email);
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/dashboard/);
   await expect(page.getByRole("heading", { name: "All wallets" })).toBeVisible();
   await expect(page.getByText("Getting started")).toBeVisible();
@@ -221,23 +232,19 @@ test("phone width has no horizontal page scroll", async ({ page }) => {
 test("open redirects are refused after sign-in", async ({ page }) => {
   const email = `r${Date.now()}@example.test`;
   await page.request.post("/api/auth/sign-up/email", {
-    data: { email, password: "correct-horse-battery", name: email.split("@")[0] },
+    data: { email, password: PASSWORD, name: email.split("@")[0] },
     headers: { Origin: "http://localhost:3200" },
   });
-  await page.request.post("/api/auth/sign-out", { data: {}, headers: { Origin: "http://localhost:3200" } });
+  await markVerified(email);
   await page.goto("/login?next=//evil.example/x");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/localhost:3200\/dashboard/);
 });
 
 test("import from the wallets page: columns are matched, previewed, then imported; a wallet's chain can be fixed", async ({ page }) => {
-  await page.goto("/signup");
-  await page.getByLabel("Email").fill(`ivy${Date.now()}@example.test`);
-  await page.getByLabel("Password").fill("correct-horse-battery");
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/dashboard/);
+  await signUpAndEnter(page, `ivy${Date.now()}@example.test`);
 
   await page.getByRole("button", { name: "Import or export" }).click();
   await page.getByRole("button", { name: "Import CSV or JSON" }).click();
@@ -268,17 +275,23 @@ test("import from the wallets page: columns are matched, previewed, then importe
   await expect(drawer).not.toContainText("Ethereum");
 });
 
-test("a new account sees a verify-email banner it can resend from or dismiss", async ({ page }) => {
+test("an unverified account cannot sign in until the email is confirmed", async ({ page }) => {
   const email = `vera${Date.now()}@example.test`;
   await page.goto("/signup");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByText(/Confirm your email before signing in/)).toBeVisible();
+  await page.getByRole("button", { name: "Resend confirmation link" }).click();
+  await expect(page.getByText(`Sent. Check ${email}`)).toBeVisible();
+
+  await markVerified(email);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/dashboard/);
-  const banner = page.getByRole("region", { name: "Verify your email" });
-  await expect(banner).toContainText(email);
-  await banner.getByRole("button", { name: "Resend link" }).click();
-  await expect(banner).toContainText("Sent.");
-  await banner.getByRole("button", { name: "Dismiss" }).click();
-  await expect(banner).toHaveCount(0);
 });
