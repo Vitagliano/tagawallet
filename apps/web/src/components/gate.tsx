@@ -21,7 +21,7 @@ export function Gate({ signedIn }: { signedIn: boolean }) {
           Download the extension
         </a>
         <Link
-          href={signedIn ? "/dashboard" : "/signup"}
+          href="/dashboard"
           className="inline-flex h-11 items-center justify-center rounded-xl bg-[color-mix(in_srgb,var(--ink)_14%,var(--paper))] px-5 text-sm font-semibold leading-none shadow-[inset_0_0_0_1px_var(--line)] hover:bg-[color-mix(in_srgb,var(--ink)_20%,var(--paper))]"
         >
           {signedIn ? "Open dashboard" : "Join the dashboard"}

@@ -11,3 +11,5 @@ playwright-report
 .release-dist
 .dev-db
 .chrome-extension-dev
+.vercel
+.env*

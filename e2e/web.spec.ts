@@ -15,20 +15,26 @@ test("first-run web flow in the browser, with no CSP violations", async ({ page 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "TagAWallet" })).toBeVisible();
   await page.getByRole("link", { name: "Join the dashboard" }).click();
+  await expect(page).toHaveURL(/dashboard/);
+  await expect(page.getByRole("heading", { name: "All wallets" })).toBeVisible();
+  await expect(page.getByText("No wallets yet")).toBeVisible();
+  await page.getByRole("banner").getByRole("button", { name: "Create account" }).click();
 
+  const signup = page.getByRole("dialog", { name: "Create your account" });
   const email = `dana${Date.now()}@example.test`;
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("short");
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByText("Use at least 10 characters")).toBeVisible();
-  await page.getByLabel("Password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await signup.getByLabel("Email").fill(email);
+  await signup.getByLabel("Password").fill("short");
+  await signup.getByRole("button", { name: "Create account" }).click();
+  await expect(signup.getByText("Use at least 10 characters")).toBeVisible();
+  await signup.getByLabel("Password").fill(PASSWORD);
+  await signup.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("dialog", { name: "Check your email" })).toBeVisible();
   await markVerified(email);
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Back to sign in" }).click();
+  const signin = page.getByRole("dialog", { name: "Sign in" });
+  await signin.getByLabel("Email").fill(email);
+  await signin.getByLabel("Password").fill(PASSWORD);
+  await signin.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/dashboard/);
   await expect(page.getByRole("heading", { name: "All wallets" })).toBeVisible();
   await expect(page.getByText("Getting started")).toBeVisible();
@@ -216,13 +222,15 @@ test("first-run web flow in the browser, with no CSP violations", async ({ page 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/login/);
   await page.goto("/dashboard");
-  await expect(page).toHaveURL(/login\?next/);
+  await expect(page).toHaveURL(/\/dashboard\/?$/);
+  await expect(page.getByRole("heading", { name: "All wallets" })).toBeVisible();
+  await expect(page.getByText("No wallets yet")).toBeVisible();
   expect(problems).toEqual([]);
 });
 
 test("phone width has no horizontal page scroll", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
-  for (const path of ["/", "/login", "/signup", "/privacy"]) {
+  for (const path of ["/", "/login", "/signup", "/privacy", "/dashboard"]) {
     await page.goto(path);
     const [scroll, client] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     expect(scroll, path).toBeLessThanOrEqual(client);

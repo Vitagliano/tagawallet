@@ -12,10 +12,27 @@ export const SESSION_COOKIE = "taw_session";
 
 export type User = WithId<Document>;
 
+const authBaseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || "http://localhost:3000";
+
+/** Apex + www (and the configured base) so production login works whichever host people use. */
+function authTrustedOrigins () {
+  const origins = new Set<string>([
+    "http://localhost:3000",
+    "https://tagawallet.com",
+    "https://www.tagawallet.com",
+  ]);
+  for (const raw of [authBaseUrl, process.env.APP_URL]) {
+    if (!raw) continue;
+    try { origins.add(new URL(raw).origin); } catch {}
+  }
+  return [...origins];
+}
+
 export const auth = betterAuth({
   // Standalone Mongo (local / memory-server) doesn't support transactions; omit `client`.
   database: mongodbAdapter(mongoDb),
-  baseURL: process.env.BETTER_AUTH_URL || process.env.APP_URL || "http://localhost:3000",
+  baseURL: authBaseUrl,
+  trustedOrigins: authTrustedOrigins(),
   secret: process.env.BETTER_AUTH_SECRET,
   user: {
     modelName: "users",
@@ -64,7 +81,7 @@ export const auth = betterAuth({
     revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, token }) => {
       const url = `${appUrl()}/reset-password?token=${encodeURIComponent(token)}`;
-      void sendEmail(
+      await sendEmail(
         user.email,
         "Reset your TagAWallet password",
         `Hi ${user.name || "there"},\n\nReset your password:\n${url}\n\nThe link works for one hour. If you didn't ask for this, ignore the email.`,
@@ -77,7 +94,7 @@ export const auth = betterAuth({
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, token }) => {
       const url = `${appUrl()}/verify-email/${encodeURIComponent(token)}`;
-      void sendEmail(
+      await sendEmail(
         user.email,
         "Confirm your email for TagAWallet",
         `Hi ${user.name || "there"},\n\nConfirm this is your email address to finish creating your account:\n${url}\n\nThe link works for a few days. If you didn't create a TagAWallet account, ignore this email.`,
