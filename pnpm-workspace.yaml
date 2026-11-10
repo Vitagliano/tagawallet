@@ -1,3 +1,7 @@
 packages:
   - apps/*
   - packages/*
+
+# mongodb-memory-server is only for local e2e/dev-db; no need to download its binary on Vercel.
+allowBuilds:
+  mongodb-memory-server: false
