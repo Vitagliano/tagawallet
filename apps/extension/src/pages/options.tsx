@@ -18,6 +18,13 @@ function App() {
     document.documentElement.dataset.theme = settings.theme;
   };
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    const report = () => void send({ type: "systemScheme", dark: matchMedia("(prefers-color-scheme: dark)").matches });
+    report();
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", report);
+    return () => mq.removeEventListener("change", report);
+  }, []);
   if (!s || !status) return null;
   const patch = async (p: Partial<Settings>) => {
     const next = await send<Settings>({ type: "updateSettings", patch: p });

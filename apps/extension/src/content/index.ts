@@ -465,9 +465,15 @@ function onTabMessage(message: TabMessage, _sender: chrome.runtime.MessageSender
   if (message.type === "taw:scan") reply({ detected: pageEntries() });
 }
 
+function reportScheme() {
+  void send({ type: "systemScheme", dark: matchMedia("(prefers-color-scheme: dark)").matches });
+}
+
 // The script can be injected more than once (popup, right-click). Only the first copy listens, so nothing runs twice.
 if (!(window as unknown as { __tagawallet?: boolean }).__tagawallet) {
   (window as unknown as { __tagawallet?: boolean }).__tagawallet = true;
   chrome.runtime.onMessage.addListener(onTabMessage);
   void applySettings();
+  reportScheme();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", reportScheme);
 }

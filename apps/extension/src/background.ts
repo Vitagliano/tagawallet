@@ -20,6 +20,8 @@ type Local = {
   library?: Library;
   /** Set when the server rejected our token, so the person is told instead of silently signed out. */
   authExpired?: boolean;
+  /** Last known prefers-color-scheme: dark, reported by pages that have matchMedia. */
+  systemDark?: boolean;
 };
 
 const get = <K extends keyof Local>(...keys: K[]) => chrome.storage.local.get(keys) as Promise<Pick<Local, K>>;
@@ -32,6 +34,15 @@ class NetworkError extends Error {}
 const normalizedOf = (q: { address: string; chain: string }) => normalizeAddress(q.address, chainFamily(q.chain as ChainId));
 
 const pageKey = (tabId: number) => `page:${tabId}`;
+
+/** Dark toolbar chrome needs the light glyph; light chrome needs the dark one. */
+async function updateActionIcon() {
+  const [{ settings }, { systemDark }] = await Promise.all([get("settings"), get("systemDark")]);
+  const theme = settings?.theme ?? DEFAULT_SETTINGS.theme;
+  const dark = theme === "dark" || (theme === "system" && !!systemDark);
+  const dir = dark ? "icons/dark" : "icons";
+  await chrome.action.setIcon({ path: { 16: `${dir}/16.png`, 32: `${dir}/32.png`, 48: `${dir}/48.png`, 128: `${dir}/128.png` } }).catch(() => {});
+}
 
 /**
  * The toolbar badge. "!" when the session ended. Otherwise, with the page badge on, how many addresses
@@ -346,10 +357,14 @@ async function refreshBootstrap(adoptSettings = false): Promise<Bootstrap | null
       // Site toggles are per browser. The rest follows the account.
       const kept = Object.fromEntries(LOCAL_SETTINGS.map((k) => [k, local[k]]));
       await set({ settings: { ...DEFAULT_SETTINGS, ...remote, ...kept } });
+      await updateActionIcon();
     } else if (remote?.theme) {
       // The theme can be set from the website (Settings → Display), so pick it up on every refresh, not just at startup.
       const local = await getSettings();
-      if (local.theme !== remote.theme) await set({ settings: { ...local, theme: remote.theme } });
+      if (local.theme !== remote.theme) {
+        await set({ settings: { ...local, theme: remote.theme } });
+        await updateActionIcon();
+      }
     }
     return bootstrap;
   } catch {
@@ -451,11 +466,17 @@ async function handle(message: Message): Promise<unknown> {
       await syncContentScripts();
       await broadcast({ type: "taw:settings" });
       await updateBadge();
+      if (message.patch.theme !== undefined) await updateActionIcon();
       if (message.patch.panelMode) await applyPanelMode(next.panelMode);
       const synced = Object.fromEntries(Object.entries(message.patch).filter(([k]) => !(LOCAL_SETTINGS as readonly string[]).includes(k)));
       if (Object.keys(synced).length && next.cloudSync) await call("/api/extension/settings", { method: "PATCH", body: synced }).catch(() => {});
       if (message.patch.cloudSync) void flushQueue();
       return next;
+    }
+    case "systemScheme": {
+      await set({ systemDark: message.dark });
+      await updateActionIcon();
+      return true;
     }
     case "setSiteEnabled": {
       const s = await getSettings();
@@ -579,6 +600,7 @@ function setupBackgroundJobs() {
   // Service workers sleep, so an alarm makes sure queued tags sync even if the person never opens a page.
   void chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 5 });
   void updateBadge();
+  void updateActionIcon();
 }
 
 async function tagSelection(tab: chrome.tabs.Tab | undefined, frameId: number | undefined, text: string) {

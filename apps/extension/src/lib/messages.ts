@@ -107,7 +107,9 @@ export type Message =
   | { type: "floatNonce"; nonce: string }
   /** Floating panel → background: is this frame one our content script placed? Replies a boolean. */
   | { type: "checkFloat"; nonce: string }
-  | { type: "open"; path: string };
+  | { type: "open"; path: string }
+  /** OS color scheme, so the toolbar icon can follow "system" without matchMedia in the service worker. */
+  | { type: "systemScheme"; dark: boolean };
 
 export function send<T = any>(message: Message): Promise<T> {
   return chrome.runtime.sendMessage(message);

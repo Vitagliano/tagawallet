@@ -172,6 +172,15 @@ function App() {
     toHost({ type: "theme", theme: dark ? "dark" : "light" });
   }, [settings]);
 
+  // Toolbar icon follows OS dark mode when the theme setting is "system".
+  useEffect(() => {
+    const report = () => void send({ type: "systemScheme", dark: matchMedia("(prefers-color-scheme: dark)").matches });
+    report();
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", report);
+    return () => mq.removeEventListener("change", report);
+  }, []);
+
   // Escape backs out of the form first, then closes the floating panel.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
