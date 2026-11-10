@@ -42,7 +42,7 @@ export function Field({ label, error, hint, children }: { label: string; error?:
 }
 
 /** A panel that floats over the right edge, like the wallet peek: no backdrop, nothing underneath moves. Esc closes. */
-function FloatingPanel({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+function FloatingPanel({ open, onClose, title, children, fit }: { open: boolean; onClose: () => void; title: string; children: ReactNode; fit?: boolean }) {
   const [leaving, setLeaving] = useState(false);
   const close = useCallback(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return onClose();
@@ -56,9 +56,13 @@ function FloatingPanel({ open, onClose, title, children }: { open: boolean; onCl
     return () => window.removeEventListener("keydown", onKey);
   }, [open, close]);
   if (!open) return null;
+  // Default stretches top→bottom (wallet peek). `fit` hugs content, still docked to the bottom edge.
+  const place = fit
+    ? "inset-x-2 bottom-2 max-h-[85dvh] md:inset-x-auto md:top-auto md:right-4 md:bottom-4 md:max-h-[calc(100dvh-6rem)] md:w-[24rem]"
+    : "inset-x-2 bottom-2 max-h-[85dvh] md:inset-x-auto md:top-20 md:right-4 md:bottom-4 md:max-h-none md:w-[24rem]";
   return (
     <aside role="dialog" aria-modal="false" aria-label={title}
-      className={`fixed inset-x-2 bottom-2 z-30 flex max-h-[85dvh] flex-col overflow-hidden surface-raised rounded-2xl text-ink md:inset-x-auto md:top-20 md:right-4 md:bottom-4 md:max-h-none md:w-[24rem] ${leaving ? "motion-safe:animate-[panel-out_120ms_ease-in_forwards]" : "motion-safe:animate-[panel-in_180ms_ease-out]"}`}>
+      className={`fixed z-30 flex flex-col overflow-hidden surface-raised rounded-2xl text-ink ${place} ${leaving ? "motion-safe:animate-[panel-out_120ms_ease-in_forwards]" : "motion-safe:animate-[panel-in_180ms_ease-out]"}`}>
       <span aria-hidden className="mx-auto mt-2 h-1 w-10 rounded-full bg-line md:hidden" />
       <div className="flex items-center justify-between gap-2 py-2 pr-2 pl-4">
         <h2 className="min-w-0 truncate text-base font-semibold">{title}</h2>
@@ -69,14 +73,14 @@ function FloatingPanel({ open, onClose, title, children }: { open: boolean; onCl
   );
 }
 
-export function Modal({ open, onClose, title, children, variant = "dialog" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; variant?: "dialog" | "drawer" }) {
+export function Modal({ open, onClose, title, children, variant = "dialog", fit }: { open: boolean; onClose: () => void; title: string; children: ReactNode; variant?: "dialog" | "drawer"; fit?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
     if (open && d && !d.open) d.showModal();
     if (!open && d?.open) d.close();
   }, [open]);
-  if (variant === "drawer") return <FloatingPanel open={open} onClose={onClose} title={title}>{children}</FloatingPanel>;
+  if (variant === "drawer") return <FloatingPanel open={open} onClose={onClose} title={title} fit={fit}>{children}</FloatingPanel>;
   return (
     <dialog ref={ref} onClose={onClose} aria-label={title} className="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-2xl bg-card p-0 text-ink">
       {open && (

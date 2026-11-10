@@ -10,13 +10,28 @@ import { z } from "zod";
 import { authClient } from "@/lib/auth-client";
 import { Button, ErrorNote, Field, Input, Logo } from "./ui";
 
+/** Shared type scale for auth secondary copy and switch links (page + drawer). */
+const authNote = "text-sm text-muted";
+const authLink = "text-sm text-muted underline underline-offset-2 hover:text-ink";
+
+function AuthFooter ({ children }: { children: ReactNode }) {
+  return <p className={`mt-5 ${authNote}`}>{children}</p>;
+}
+
+function AuthSwitch ({ onClick, children }: { onClick?: () => void; children: ReactNode }) {
+  if (onClick) {
+    return <button type="button" className={authLink} onClick={onClick}>{children}</button>;
+  }
+  return null;
+}
+
 export function AuthFrame ({ title, children, footer }: { title: string; children: React.ReactNode; footer?: React.ReactNode }) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center px-4 py-10">
       <Link href="/" className="mb-8"><Logo className="text-lg" /></Link>
       <h1 className="mb-5 text-2xl font-semibold tracking-tight">{title}</h1>
       {children}
-      {footer && <p className="mt-5 text-sm text-muted">{footer}</p>}
+      {footer && <AuthFooter>{footer}</AuthFooter>}
     </main>
   );
 }
@@ -25,7 +40,7 @@ function AuthPanel ({ children, footer }: { children: ReactNode; footer?: ReactN
   return (
     <div className="overflow-y-auto px-4 pb-5">
       {children}
-      {footer && <p className="mt-5 text-sm text-muted">{footer}</p>}
+      {footer && <AuthFooter>{footer}</AuthFooter>}
     </div>
   );
 }
@@ -92,8 +107,8 @@ export function LoginForm ({ next: nextProp, embedded, onSwitch, onDone }: AuthS
   const { register, handleSubmit, setError, getValues, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(loginSchema) });
 
   const footer = embedded
-    ? <>New here? <button type="button" className="underline" onClick={onSwitch}>Create an account</button></>
-    : <>New here? <Link className="underline" href={`/signup?next=${encodeURIComponent(next)}`}>Create an account</Link></>;
+    ? <>New here? <AuthSwitch onClick={onSwitch}>Create an account</AuthSwitch></>
+    : <>New here? <Link className={authLink} href={`/signup?next=${encodeURIComponent(next)}`}>Create an account</Link></>;
 
   const body = (
     <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
@@ -134,7 +149,7 @@ export function LoginForm ({ next: nextProp, embedded, onSwitch, onDone }: AuthS
         </Button>
       )}
       <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Sign in</Button>
-      <Link href="/forgot-password" className="block text-sm text-muted underline">Forgot your password?</Link>
+      <Link href="/forgot-password" className={`block ${authLink}`}>Forgot your password?</Link>
     </form>
   );
 
@@ -150,14 +165,14 @@ export function SignupForm ({ next: nextProp, embedded, onSwitch, onPendingEmail
 
   if (pendingEmail) {
     const footer = embedded
-      ? <button type="button" className="underline" onClick={onSwitch}>Back to sign in</button>
-      : <Link className="underline" href={`/login?next=${encodeURIComponent(next)}`}>Back to sign in</Link>;
+      ? <AuthSwitch onClick={onSwitch}>Back to sign in</AuthSwitch>
+      : <Link className={authLink} href={`/login?next=${encodeURIComponent(next)}`}>Back to sign in</Link>;
     const body = (
       <>
-        <p role="status" className="text-sm text-muted">
+        <p role="status" className={authNote}>
           We sent a confirmation link to <span className="font-medium text-ink">{pendingEmail}</span>. Confirm it to finish creating your account, then sign in.
         </p>
-        <p className="mt-4 text-sm text-muted">Nothing lands in your inbox? Check spam, or try signing in — we&apos;ll send another link if the address still needs confirming.</p>
+        <p className={`mt-4 ${authNote}`}>Nothing lands in your inbox? Check spam, or try signing in — we&apos;ll send another link if the address still needs confirming.</p>
       </>
     );
     if (embedded) return <AuthPanel footer={footer}>{body}</AuthPanel>;
@@ -165,8 +180,8 @@ export function SignupForm ({ next: nextProp, embedded, onSwitch, onPendingEmail
   }
 
   const footer = embedded
-    ? <>Have an account? <button type="button" className="underline" onClick={onSwitch}>Sign in</button></>
-    : <>Have an account? <Link className="underline" href={`/login?next=${encodeURIComponent(next)}`}>Sign in</Link></>;
+    ? <>Have an account? <AuthSwitch onClick={onSwitch}>Sign in</AuthSwitch></>
+    : <>Have an account? <Link className={authLink} href={`/login?next=${encodeURIComponent(next)}`}>Sign in</Link></>;
 
   const body = (
     <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
@@ -190,7 +205,7 @@ export function SignupForm ({ next: nextProp, embedded, onSwitch, onPendingEmail
       <Field label="Password" error={errors.password?.message} hint="At least 10 characters"><Input type="password" autoComplete="new-password" {...register("password")} /></Field>
       <ErrorNote>{problem}</ErrorNote>
       <Button type="submit" variant="primary" className="w-full" disabled={isSubmitting}>Create account</Button>
-      <p className="text-xs text-muted">We&apos;ll email you a link to confirm the address before you can sign in.</p>
+      <p className={authNote}>We&apos;ll email you a link to confirm the address before you can sign in.</p>
     </form>
   );
 
@@ -203,7 +218,7 @@ export function ForgotForm () {
   const [problem, setProblem] = useState("");
   const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(z.object({ email: emailSchema })) });
   return (
-    <AuthFrame title="Reset your password" footer={<Link className="underline" href="/login">Back to sign in</Link>}>
+    <AuthFrame title="Reset your password" footer={<Link className={authLink} href="/login">Back to sign in</Link>}>
       {sent ? <p role="status" className="text-sm">If that email has an account, a reset link is on its way. It works for one hour.</p> : (
         <form className="space-y-3" noValidate onSubmit={handleSubmit(async (v) => {
           setProblem("");

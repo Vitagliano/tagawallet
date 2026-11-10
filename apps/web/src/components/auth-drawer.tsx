@@ -35,7 +35,7 @@ export function AuthDrawer ({
   const title = pending ? "Check your email" : mode === "login" ? "Sign in" : "Create your account";
 
   return (
-    <Modal variant="drawer" open={open} onClose={onClose} title={title}>
+    <Modal variant="drawer" fit open={open} onClose={onClose} title={title}>
       <Suspense fallback={<div className="px-4 pb-5 text-sm text-muted">Loading…</div>}>
         {mode === "login" ? (
           <LoginForm
