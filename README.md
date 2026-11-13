@@ -169,7 +169,7 @@ Product intent and MVP scope are spelled out in [`tagawallet-prd.md`](tagawallet
 
 **Web** — deploy `apps/web` with `MONGODB_URI`, `APP_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, and `ADMIN_EMAILS` set, plus any OAuth/email keys you use. In production, `APP_URL` and `BETTER_AUTH_URL` should match the public origin people actually use (including `www` if that’s the live host).
 
-**Extension** — ship a `TAW_RELEASE=1` (or `TAW_API_BASE=…`) build whose API origin matches `APP_URL`. Store listing screenshots and promos live under `apps/extension/store-assets/` / `store-assets/`; generate with `pnpm generate:store-assets`.
+**Extension** — ship a `TAW_RELEASE=1` (or `TAW_API_BASE=…`) build whose API origin matches `APP_URL`. Store listing screenshots and promos live under `apps/extension/store-assets/`; regenerate with `pnpm generate:store-assets`.
 
 **Install CTAs** — home-page “Add to Chrome” buttons use `NEXT_PUBLIC_EXTENSION_STORE_URL`. Until that URL is set, they fall through to `/extension`.
 

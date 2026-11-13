@@ -1,5 +1,5 @@
 // Captures real pages with the real built extension running on them, for the Chrome Web Store images.
-// Usage: node scripts/capture-store-screenshots.mjs   (then: node scripts/generate-store-assets-v4.mjs)
+// Usage: node scripts/capture-store-screenshots.mjs   (then: node scripts/generate-store-assets.mjs)
 import { chromium } from "@playwright/test";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

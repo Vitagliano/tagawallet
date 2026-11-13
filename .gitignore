@@ -13,3 +13,6 @@ playwright-report
 .chrome-extension-dev
 .vercel
 .env*
+# Local Chrome Web Store capture/workdir (finals live in apps/extension/store-assets)
+store-assets/
+apps/extension/*.zip
