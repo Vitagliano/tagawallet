@@ -8,7 +8,9 @@
     "build": "pnpm --filter @tagawallet/web build && pnpm --filter @tagawallet/extension build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "generate:store-assets": "node scripts/capture-store-screenshots.mjs && node scripts/generate-store-assets-v4.mjs",
+    "preview:store-assets": "node scripts/preview-server.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
