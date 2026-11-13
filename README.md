@@ -1,5 +1,7 @@
 # TagAWallet
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Know who’s behind every wallet.**
 
 TagAWallet is a private-first wallet identity layer for crypto. Tag addresses, group them under people and projects, keep research in shareable lists, and recognize those identities as you browse — without ever touching seed phrases, private keys, or funds.
@@ -198,7 +200,7 @@ Issues and pull requests are welcome. For larger changes, open an issue first so
 
 ## License
 
-License to be added before the public release. Until a `LICENSE` file is present in this repository, all rights are reserved by the authors.
+[MIT](LICENSE) — free to use, copy, modify, and distribute, with attribution.
 
 ---
 

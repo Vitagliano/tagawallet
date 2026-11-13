@@ -1,6 +1,7 @@
 {
   "name": "tagawallet",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@12.16.1",
   "scripts": {
     "dev": "pnpm --filter @tagawallet/web dev",
