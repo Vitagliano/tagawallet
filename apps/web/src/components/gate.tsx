@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BrandMark } from "@/components/brand-mark";
+import { SITE_TAGLINE } from "@/lib/site";
 
 const GITHUB_URL = "https://github.com/Vitagliano/tagawallet";
 const PORTFOLIO_URL = "https://vitagliano.me";
@@ -11,7 +12,10 @@ export function Gate ({ signedIn }: { signedIn: boolean }) {
       <h1 className="mt-8 text-[clamp(2.5rem,8vw,4rem)] font-semibold tracking-tight">
         TagAWallet
       </h1>
-      <div className="mt-10 grid w-full max-w-md grid-cols-1 gap-3 sm:grid-cols-2">
+      <p className="mt-3 max-w-md text-center text-base text-muted sm:text-lg">
+        {SITE_TAGLINE}
+      </p>
+      <div className="mt-8 grid w-full max-w-md grid-cols-1 gap-3 sm:grid-cols-2">
         <Link
           href="/extension"
           className="inline-flex h-11 items-center justify-center rounded-xl bg-[color-mix(in_srgb,var(--ink)_10%,var(--paper))] px-5 text-sm font-semibold leading-none text-muted shadow-[inset_0_0_0_1px_var(--line)]"

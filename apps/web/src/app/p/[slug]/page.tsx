@@ -5,6 +5,7 @@ import { CHAINS, LINK_TYPE_LABELS, linkHref, truncateAddress, type ChainId, type
 import { publicProfile } from "@/lib/entities";
 import { track } from "@/lib/access";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 import { ReportButton } from "./report";
 
 type Props = { params: Promise<{ slug: string }> };
@@ -13,7 +14,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const p = await publicProfile((await params).slug);
   if (!p) return { robots: { index: false } };
   // Indexing is a second, separate opt-in from publishing.
-  return { title: p.name, description: p.description.slice(0, 160), robots: { index: p.indexable, follow: false } };
+  const description = p.description.slice(0, 160);
+  return { title: p.name, description, ...socialMetadata(p.name, description), robots: { index: p.indexable, follow: false } };
 }
 
 const STATUS = {

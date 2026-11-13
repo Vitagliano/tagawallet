@@ -1,7 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
-export const metadata = { title: "Terms" };
+const title = "Terms";
+const description = "Terms of use for TagAWallet — an organizational tool, not a wallet or financial advice.";
+export const metadata: Metadata = { title, description, ...socialMetadata(title, description) };
 
 export default function Terms() {
   return (

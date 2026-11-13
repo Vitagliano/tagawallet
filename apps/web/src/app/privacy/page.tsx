@@ -1,7 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
-export const metadata = { title: "Privacy" };
+const title = "Privacy";
+const description = "How TagAWallet handles your wallet lists, labels, and extension data.";
+export const metadata: Metadata = { title, description, ...socialMetadata(title, description) };
 
 export default function Privacy() {
   return (
