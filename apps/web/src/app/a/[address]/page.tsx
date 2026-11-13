@@ -6,6 +6,7 @@ import { publicAddress } from "@/lib/public-address";
 import { currentUser } from "@/lib/session";
 import { track } from "@/lib/access";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
 type Props = { params: Promise<{ address: string }> };
 
@@ -13,9 +14,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const a = await publicAddress((await params).address);
   if (!a) return { robots: { index: false } };
   const who = a.claims[0]?.name;
+  const title = who ? `${who} · ${truncateAddress(a.input)}` : truncateAddress(a.input);
+  const description = who
+    ? `Public names for ${a.input} on TagAWallet: ${a.claims.map((c) => c.name).join(", ")}.`
+    : `What TagAWallet knows publicly about ${a.input}.`;
   return {
-    title: who ? `${who} · ${truncateAddress(a.input)}` : truncateAddress(a.input),
-    description: who ? `Public names for ${a.input} on TagAWallet: ${a.claims.map((c) => c.name).join(", ")}.` : `What TagAWallet knows publicly about ${a.input}.`,
+    title,
+    description,
+    ...socialMetadata(title, description),
     robots: { index: a.indexable, follow: a.indexable },
   };
 }

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { publicUserPage } from "@/lib/public-user";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
 type Props = { params: Promise<{ handle: string }> };
 const initials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
@@ -10,7 +11,9 @@ const initials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const u = await publicUserPage((await params).handle);
   if (!u) return { robots: { index: false } };
-  return { title: `${u.name} (@${u.handle})`, description: u.bio || `Contacts and lists ${u.name} published on TagAWallet.`, robots: { index: false, follow: false } };
+  const title = `${u.name} (@${u.handle})`;
+  const description = u.bio || `Contacts and lists ${u.name} published on TagAWallet.`;
+  return { title, description, ...socialMetadata(title, description), robots: { index: false, follow: false } };
 }
 
 /** Someone's public page: the contacts and lists they chose to publish. Everything else they have stays private. */

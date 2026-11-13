@@ -1,7 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
-export const metadata = { title: "API" };
+const title = "API";
+const description = "Look up wallet labels and manage lists with the TagAWallet HTTP API.";
+export const metadata: Metadata = { title, description, ...socialMetadata(title, description) };
 
 const ENDPOINTS: { path: string; what: string; params?: string }[] = [
   { path: "/api/v1/wallets", what: "Your wallets and those in lists shared with you, newest first.", params: "q, list, entity, tag, status, chain, limit (max 500)" },

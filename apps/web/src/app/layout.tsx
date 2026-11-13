@@ -3,15 +3,29 @@ import { Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import { ThemeFavicon } from "@/components/theme-favicon";
 import { currentUser } from "@/lib/session";
+import { SITE_DESCRIPTION, SITE_NAME, SITE_TITLE } from "@/lib/site";
 import "./globals.css";
 
 const sans = Instrument_Sans({ subsets: ["latin"], variable: "--font-instrument" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains" });
 
 const baseMetadata = {
-  title: { default: "TagAWallet: know who's behind every wallet", template: "%s · TagAWallet" },
-  description: "Privately tag addresses, link socials, group related wallets, and recognize identities wherever you research and trade.",
+  title: { default: SITE_TITLE, template: `%s · ${SITE_NAME}` },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
   metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
 } satisfies Metadata;
 
 /** Forced light/dark get a fixed favicon; "system" keeps the adaptive app/icon.svg. */

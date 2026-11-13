@@ -4,13 +4,16 @@ import Link from "next/link";
 import { CHAINS, truncateAddress, type ChainId } from "@tagawallet/shared";
 import { publicList } from "@/lib/public-user";
 import { Logo } from "@/components/ui";
+import { socialMetadata } from "@/lib/site";
 
 type Props = { params: Promise<{ id: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const l = await publicList((await params).id);
   if (!l) return { robots: { index: false } };
-  return { title: `${l.name} · ${l.publishedBy.name}`, description: l.description || `A list of wallets published by ${l.publishedBy.name}.`, robots: { index: false, follow: false } };
+  const title = `${l.name} · ${l.publishedBy.name}`;
+  const description = l.description || `A list of wallets published by ${l.publishedBy.name}.`;
+  return { title, description, ...socialMetadata(title, description), robots: { index: false, follow: false } };
 }
 
 /** A published list: the names its owner gave these wallets. Notes and wallets other members added aren't shown. */
