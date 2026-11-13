@@ -171,7 +171,7 @@ Product intent and MVP scope are spelled out in [`tagawallet-prd.md`](tagawallet
 
 **Extension** — ship a `TAW_RELEASE=1` (or `TAW_API_BASE=…`) build whose API origin matches `APP_URL`. Store listing screenshots and promos live under `apps/extension/store-assets/`; regenerate with `pnpm generate:store-assets`.
 
-**Install CTAs** — home-page “Add to Chrome” buttons use `NEXT_PUBLIC_EXTENSION_STORE_URL`. Until that URL is set, they fall through to `/extension`.
+**Install CTAs** — the landing page shows “Extension soon” while the Chrome Web Store listing is in review (`/extension` has more detail). Set `NEXT_PUBLIC_EXTENSION_STORE_URL` when the listing goes live.
 
 ---
 
