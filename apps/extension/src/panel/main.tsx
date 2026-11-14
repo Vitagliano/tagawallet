@@ -303,7 +303,7 @@ function App() {
 
       <div className="body" role="tabpanel" aria-label={current === "page" ? "This page" : "Library"} hidden={!!routed}>
         {!status.connected && (
-          <div className="callout warn" style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 0, marginBottom: 8 }}>
+          <div className="callout" style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 0, marginBottom: 8 }}>
             <p style={{ flex: 1 }}>{status.authState === "expired" ? "Your session expired. Reconnect to keep saving tags." : "Connect to save tags and see labels."}</p>
             <button type="button" className="btn sm primary press" onClick={connect}>{status.authState === "expired" ? "Reconnect" : "Connect account"}</button>
           </div>
