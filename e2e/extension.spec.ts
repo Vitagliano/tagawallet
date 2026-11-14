@@ -53,7 +53,7 @@ test("manifest asks for no broad host access by default", () => {
   expect(m.web_accessible_resources).toEqual([{ resources: ["panel.html"], matches: ["https://*/*"] }]);
   expect(JSON.stringify(m)).not.toContain("<all_urls>");
   for (const banned of ["history", "downloads", "cookies", "clipboardRead", "tabs", "webRequest"]) expect(m.permissions).not.toContain(banned);
-  expect(m.externally_connectable.matches).toEqual(["https://tagawallet.com/*"]);
+  expect(m.externally_connectable.matches).toEqual(["https://www.tagawallet.com/*", "https://tagawallet.com/*"]);
 });
 
 const PANEL = () => `chrome-extension://${extensionId}/panel.html`;

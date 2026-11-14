@@ -2,6 +2,17 @@ import { CURATED_SITES, chainFamily, normalizeAddress, provenanceText, sanitizeU
 import { DEFAULT_SETTINGS, isUntag, type AuthState, type Bootstrap, type FailedTag, LOCAL_SETTINGS, type Collection, type Library, type Loaded, type Message, type PageSummary, type PanelMessage, type Route, type SearchResult, type WalletFiling, type QueryAddress, type QueueItem, type Settings, type Status, type TabMessage, type TagInput, type TagResult, type UntagResult } from "./lib/messages";
 
 const API = __API_BASE__;
+/** Apex + www of the baked API host — connect pages may land on either after redirects. */
+function isSiteOrigin (origin: string | undefined) {
+  if (!origin) return false;
+  try {
+    const api = new URL(API);
+    if (origin === api.origin) return true;
+    if (api.protocol !== "https:") return false;
+    const apex = api.hostname.replace(/^www\./, "");
+    return origin === `https://${apex}` || origin === `https://www.${apex}`;
+  } catch { return false; }
+}
 const CACHE_TTL = 5 * 60_000;
 // Teammates edit shared lists, so those labels go stale sooner.
 const SHARED_TTL = 60_000;
@@ -571,7 +582,7 @@ chrome.tabs.onRemoved.addListener((tabId) => void chrome.storage.session.remove(
 
 // The token arrives only from our own site, over the channel the manifest allows.
 chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
-  if (sender.origin !== new URL(API).origin || message?.type !== "tagawallet:connect" || typeof message.token !== "string") {
+  if (!isSiteOrigin(sender.origin) || message?.type !== "tagawallet:connect" || typeof message.token !== "string") {
     reply({ ok: false });
     return;
   }

@@ -18,8 +18,12 @@ export function ConnectExtension() {
       // Handed straight to the extension over Chrome messaging, so it never appears in a URL or page.
       await new Promise<void>((resolve, reject) => {
         chrome.runtime.sendMessage(ext, { type: "tagawallet:connect", token }, (res: { ok?: boolean } | undefined) => {
-          if (chrome.runtime.lastError || !res?.ok) reject(new Error("The extension didn't respond. Check that it's installed and enabled."));
-          else resolve();
+          const detail = chrome.runtime.lastError?.message;
+          if (chrome.runtime.lastError || !res?.ok) {
+            reject(new Error(detail?.includes("Receiving end does not exist") || detail?.includes("Could not establish connection")
+              ? "The extension didn't respond. Make sure TagAWallet is installed, enabled, and up to date — then open Connect from the extension again."
+              : "The extension didn't respond. Check that it's installed and enabled."));
+          } else resolve();
         });
       });
       setState("done");

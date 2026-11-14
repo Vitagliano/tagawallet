@@ -8,9 +8,23 @@ import react from "@vitejs/plugin-react";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const prod = process.env.NODE_ENV === "production" || process.env.TAW_RELEASE === "1";
-const apiBase = process.env.TAW_API_BASE ?? (prod ? "https://tagawallet.com" : "http://localhost:3000");
+// Live site is www (apex 308s there). Ship that as the baked API origin.
+const apiBase = process.env.TAW_API_BASE ?? (prod ? "https://www.tagawallet.com" : "http://localhost:3000");
 const outDir = resolve(root, process.env.TAW_OUT ?? "dist");
 const define = { __API_BASE__: JSON.stringify(apiBase), "process.env.NODE_ENV": '"production"' };
+
+/** Apex + www so connect works whichever host people land on after redirects. */
+function connectableMatches (base) {
+  const url = new URL(base);
+  const matches = [`${url.origin}/*`];
+  if (url.protocol !== "https:") return matches;
+  const apex = url.hostname.replace(/^www\./, "");
+  for (const host of [apex, `www.${apex}`]) {
+    const pattern = `https://${host}/*`;
+    if (!matches.includes(pattern)) matches.push(pattern);
+  }
+  return matches;
+}
 
 await build({
   root, configFile: false, logLevel: "warn", define, plugins: [react()],
@@ -33,7 +47,7 @@ const localDev = apiBase.startsWith("http://localhost");
 const manifest = {
   manifest_version: 3,
   name: "TagAWallet",
-  version: "1.0.0",
+  version: "1.0.1",
   description: "Privately tag wallet addresses and recognize who's behind them as you browse.",
   icons: { 16: "icons/16.png", 32: "icons/32.png", 48: "icons/48.png", 128: "icons/128.png" },
   // No popup: a click opens the panel, floating over the page or in the side panel (the person's choice).
@@ -50,7 +64,7 @@ const manifest = {
   // Nothing is granted at install. Each origin is requested when the person turns a site on.
   optional_host_permissions: ["https://*/*", ...(localDev ? ["http://localhost/*"] : [])],
   // Lets only the TagAWallet site hand the extension its session after sign-in.
-  externally_connectable: { matches: [`${new URL(apiBase).origin}/*`] },
+  externally_connectable: { matches: connectableMatches(apiBase) },
   commands: {
     _execute_action: { suggested_key: { default: "Alt+Shift+T" }, description: "Open TagAWallet" },
     "open-side-panel": { suggested_key: { default: "Alt+Shift+P" }, description: "Open the TagAWallet side panel" },
