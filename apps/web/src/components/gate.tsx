@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BrandMark } from "@/components/brand-mark";
+import { EXTENSION_STORE_URL } from "@/lib/extension";
 import { SITE_TAGLINE } from "@/lib/site";
 
 const GITHUB_URL = "https://github.com/Vitagliano/tagawallet";
@@ -16,13 +17,15 @@ export function Gate ({ signedIn }: { signedIn: boolean }) {
         {SITE_TAGLINE}
       </p>
       <div className="mt-8 grid w-full max-w-md grid-cols-1 gap-3 sm:grid-cols-2">
-        <Link
-          href="/extension"
-          className="inline-flex h-11 items-center justify-center rounded-xl bg-[color-mix(in_srgb,var(--ink)_10%,var(--paper))] px-5 text-sm font-semibold leading-none text-muted shadow-[inset_0_0_0_1px_var(--line)]"
-          aria-label="Chrome extension coming soon"
+        <a
+          href={EXTENSION_STORE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex h-11 items-center justify-center rounded-xl bg-[color-mix(in_srgb,var(--ink)_10%,var(--paper))] px-5 text-sm font-semibold leading-none text-muted shadow-[inset_0_0_0_1px_var(--line)] hover:text-ink"
+          aria-label="Add TagAWallet to Chrome"
         >
-          Extension soon
-        </Link>
+          Add to Chrome
+        </a>
         <Link
           href="/dashboard"
           className="inline-flex h-11 items-center justify-center rounded-xl bg-accent px-5 text-sm font-semibold leading-none text-accent-ink shadow-[inset_0_0_0_1px_rgb(0_0_0/0.2)] hover:opacity-90"

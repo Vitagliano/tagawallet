@@ -3,6 +3,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { api, fetcher } from "@/lib/client";
+import { EXTENSION_HREF } from "@/lib/extension";
 
 export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
 
@@ -11,7 +12,7 @@ function Onboarding({ state, onDismiss }: { state: { entity: boolean; extension:
   if (state.entity && state.extension) return null;
   const steps = [
     { done: state.entity, label: "Add a contact", hint: "Paste an address above, or use + New for a person or a project." },
-    { done: state.extension, label: "Connect the browser extension", hint: <>See their names next to addresses on explorers and X. <Link className="underline" href="/settings#extension">Set up</Link></> },
+    { done: state.extension, label: "Connect the browser extension", hint: <>See their names next to addresses on explorers and X. <a className="underline" href={EXTENSION_HREF} target="_blank" rel="noopener noreferrer">Install</a>, then <Link className="underline" href="/settings#extension">connect</Link>.</> },
   ];
   return (
     <section aria-label="Getting started" className="flex flex-wrap items-start gap-x-8 gap-y-3 rounded-2xl bg-card px-4 py-3">

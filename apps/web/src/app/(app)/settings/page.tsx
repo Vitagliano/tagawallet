@@ -8,6 +8,7 @@ import { api, fetcher } from "@/lib/client";
 import { authClient } from "@/lib/auth-client";
 import { Button, ErrorNote, Field, Input, Modal, Pill } from "@/components/ui";
 import { AutoField, useToast } from "@/components/kit";
+import { EXTENSION_HREF, EXTENSION_STORE_URL } from "@/lib/extension";
 
 const SECTIONS = [
   ["profile", "Profile"],
@@ -394,6 +395,15 @@ function SettingsInner () {
                     : dash?.onboarding.extension ? "Its session ended or was disconnected. Click the extension's icon and choose Reconnect." : "Install it for Chrome, Brave or Edge, then click its icon and choose Connect account."}
                 >
                   <span aria-hidden className={`size-2.5 rounded-full ${connected ? "bg-good" : "bg-line"}`} />
+                  {!connected && (
+                    <a
+                      href={EXTENSION_HREF}
+                      {...(EXTENSION_STORE_URL ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                      className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-medium text-muted hover:bg-[color-mix(in_srgb,var(--ink)_6%,transparent)] hover:text-ink"
+                    >
+                      Add to Chrome
+                    </a>
+                  )}
                   {connected && (
                     <Button variant="ghost" onClick={async () => {
                       const r = await api("/api/account/extension", { method: "DELETE" });
